@@ -233,15 +233,20 @@ def login(request):
         
         try:
             with transaction.atomic():
-                user, created = user_model.objects.get_or_create(phone_number=phone_number,role=role)
+                try:
+                    user = user_model.objects.get(phone_number=phone_number)
+                    # If existing user logs in as a different role, we might want to update it or reject, but let's keep it simple
+                    created = False
+                except user_model.DoesNotExist:
+                    user = user_model.objects.create_user(
+                        phone_number=phone_number, 
+                        password=password, 
+                        role=role
+                    )
+                    created = True
                 
                 if created:
                     # Set up new user
-                    if password:
-                        user.set_password(password)
-                    else:
-                        user.set_unusable_password()
-                    user.save()
                     logger.info(f"New user created with phone: {phone_number[:5]}***")
                     
                     # Create user profile based on role
@@ -265,7 +270,7 @@ def login(request):
                 code='AUTH_PROFILE_ERROR',
                 message='User profile creation failed',
                 field='profile',
-                issue='Database integrity error',
+                issue=f'Database integrity error: {str(e)}',
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
         except Exception as e:

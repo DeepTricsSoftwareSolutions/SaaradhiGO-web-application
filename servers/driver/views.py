@@ -167,7 +167,7 @@ def driver_earnings(request):
     from rest_framework.pagination import PageNumberPagination
 
     driver = request.user.driver
-    earnings = DriverEarning.objects.filter(driver_id=driver).order_by('-id')
+    earnings = DriverEarning.objects.filter(driver_id=driver).select_related('trip_id').order_by('-id')
 
     paginator = PageNumberPagination()
     paginator.page_size = 10
@@ -175,7 +175,8 @@ def driver_earnings(request):
     paginator.max_page_size = 50
     page = paginator.paginate_queryset(earnings, request)
     serializer = DriverEarningSerializer(page, many=True)
-    return paginator.get_paginated_response(serializer.data)
+    logger.info(f"Driver earnings: {serializer.data}")
+    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
