@@ -21,8 +21,52 @@ except (redis.ConnectionError, redis.TimeoutError, Exception) as e:
     redis_client = None
 
 GEO_KEY = 'drivers:geo'
+ACTIVE_TRIP_PREFIX = 'driver:active_trip:'
 
 
+def set_driver_active_trip(driver_id, trip_id):
+    """
+    Set the active trip for a driver to mark them as busy.
+    """
+    if redis_client is None:
+        return False
+    try:
+        key = f"{ACTIVE_TRIP_PREFIX}{driver_id}"
+        redis_client.set(key, str(trip_id))
+        return True
+    except Exception as e:
+        logger.error(f"Failed to set active trip for driver {driver_id}: {str(e)}")
+        return False
+
+
+def get_driver_active_trip(driver_id):
+    """
+    Get the active trip for a driver. Returns trip_id if busy, None if available.
+    """
+    if redis_client is None:
+        return None
+    try:
+        key = f"{ACTIVE_TRIP_PREFIX}{driver_id}"
+        trip_id = redis_client.get(key)
+        return int(trip_id) if trip_id else None
+    except Exception as e:
+        logger.error(f"Failed to get active trip for driver {driver_id}: {str(e)}")
+        return None
+
+
+def clear_driver_active_trip(driver_id):
+    """
+    Clear the active trip for a driver, marking them as available.
+    """
+    if redis_client is None:
+        return False
+    try:
+        key = f"{ACTIVE_TRIP_PREFIX}{driver_id}"
+        redis_client.delete(key)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to clear active trip for driver {driver_id}: {str(e)}")
+        return False
 def _validate_coordinates(lng, lat):
     """
     Validate geographic coordinates.
@@ -80,18 +124,32 @@ def add_driver_location(driver_id, lng, lat):
         lng = float(lng)
         lat = float(lat)
         
+        # Check if driver is on an active trip
+        active_trip_id = get_driver_active_trip(driver_id)
+        
         member = f'driver:{driver_id}'
+        res = update_driver_location(driver_id=driver_id, lat=lat, lng=lng)
+        
+        if active_trip_id:
+            # Driver is busy, remove from geo index but return trip_id for streaming
+            redis_client.zrem(GEO_KEY, member)
+            logger.info(f"Driver {driver_id} is on trip {active_trip_id}, streaming location but omitted from nearby.")
+            return {
+                "success": True, 
+                "message": "Location updated for active trip",
+                "active_trip_id": active_trip_id,
+                "lng": lng,
+                "lat": lat
+            }
+
+        # Driver is available, add to geo index
         result = redis_client.geoadd(GEO_KEY, [lng, lat, member])
         
-        
-        res = update_driver_location(driver_id=driver_id, lat=lat, lng=lng)
-        print(res)
-        
         if result is not None:
-            logger.info(f"Driver {driver_id} location updated: lng={lng}, lat={lat}")
+            logger.info(f"Driver {driver_id} location updated in geo index: lng={lng}, lat={lat}")
             return {"success": True, "message": "Location added successfully"}
         else:
-            logger.warning(f"Failed to add driver {driver_id} location")
+            logger.warning(f"Failed to add driver {driver_id} location to geo index")
             return {"success": False, "error": "Failed to add location"}
             
     except ValueError as e:

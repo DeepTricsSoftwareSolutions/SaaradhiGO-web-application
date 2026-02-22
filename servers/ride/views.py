@@ -9,7 +9,7 @@ from servers.ride.models import Trip, FarePricing
 from servers.ride.serializers import TripListSerializer, TripDetailSerializer
 from servers.ride.utils import estimate_amount, validate_distance
 from servers.driver.permissions import IsDriver
-from servers.redis import nearby_drivers, publish_ride_request
+from servers.redis_client import nearby_drivers, publish_ride_request
 from django.db import transaction
 
 logger = logging.getLogger(__name__)

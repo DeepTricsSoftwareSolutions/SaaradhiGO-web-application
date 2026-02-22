@@ -6,7 +6,7 @@ from rest_framework.decorators import api_view, permission_classes
 from .serializers import FavoritePlaceSerializer
 from rest_framework.permissions import IsAuthenticated
 from .models import FavoritePlace
-from ..redis import nearby_drivers
+from ..redis_client import nearby_drivers
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,7 @@ def get_nearby_drivers(request):
 
 
 # ── Notifications ────────────────────────────────────────
-
+# FCM
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_notifications(request):

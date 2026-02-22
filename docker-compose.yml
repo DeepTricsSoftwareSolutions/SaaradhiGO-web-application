@@ -18,7 +18,7 @@ services:
     command: >
       sh -c "python manage.py collectstatic --noinput &&
              python manage.py migrate --noinput &&
-             daphne -b 0.0.0.0 -p 8000 base.asgi:application"
+             python manage.py runserver 0.0.0.0:8000"
     depends_on:
       - redis
 

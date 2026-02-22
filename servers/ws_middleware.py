@@ -48,4 +48,13 @@ class JWTAuthMiddleware(BaseMiddleware):
         else:
             scope['user'] = AnonymousUser()
 
+        # Extract coordinates if provided
+        lat_list = query_params.get('lat', [])
+        lng_list = query_params.get('lng', [])
+        
+        if lat_list:
+            scope['lat'] = lat_list[0]
+        if lng_list:
+            scope['lng'] = lng_list[0]
+
         return await super().__call__(scope, receive, send)

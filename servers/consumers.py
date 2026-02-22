@@ -16,21 +16,26 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
     """
 
     async def connect(self):
-        self.user = self.scope.get('user', AnonymousUser())
+        self.user = self.scope.get('user')
 
         if isinstance(self.user, AnonymousUser) or not self.user.is_authenticated:
+            print(f"WSREJECT 4001: User is anonymous or not auth. User: {self.user}")
             await self.close(code=4001)
             return
 
         # Verify user is a driver
         self.driver = await self._get_driver()
+        print(f"WS driver check: {self.driver}")
         if not self.driver:
+            print("WSREJECT 4003: User is not a driver")
             await self.close(code=4003)
             return
-
+        lat = self.scope.get('lat')
+        lng = self.scope.get('lng')
         self.driver_id = self.driver.id
         self.driver_group = f'driver_{self.driver_id}'
-
+        await self._active_the_driver()
+        await self._add_driver_location(lng, lat)
         # Join driver's personal group (for receiving ride requests)
         await self.channel_layer.group_add(self.driver_group, self.channel_name)
         # Join global online drivers group
@@ -44,6 +49,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         if hasattr(self, 'driver_id'):
+            await self._deactive_the_driver()
             # Remove from groups
             await self.channel_layer.group_discard(self.driver_group, self.channel_name)
             await self.channel_layer.group_discard('online_drivers', self.channel_name)
@@ -77,6 +83,16 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
                     'lng': lng,
                     'lat': lat,
                 }))
+                
+                # If driver is on an active trip, stream location to the rider
+                active_trip_id = result.get('active_trip_id')
+                if active_trip_id:
+                    await self.channel_layer.group_send(f'trip_{active_trip_id}', {
+                        'type': 'driver_location_update',
+                        'lng': lng,
+                        'lat': lat,
+                        'driver_id': self.driver_id,
+                    })
             else:
                 await self.send(text_data=json.dumps({
                     'type': 'error',
@@ -118,19 +134,38 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
     def _get_driver(self):
         try:
             return self.user.driver
-        except Exception:
+        except Exception as e:
+            print(f"Error in _get_driver: {e}")
             return None
-
+    @database_sync_to_async
+    def _active_the_driver(self):
+        try:
+            self.driver.status = "online"
+            self.driver.save()
+        except Exception as e:
+            print(f"Error in _active_the_driver: {e}")
+            return None
+    @database_sync_to_async
+    def _deactive_the_driver(self):
+        try:
+            self.driver.status = "off"
+            self.driver.save()
+        except Exception as e:
+            print(f"Error in _deactive_the_driver: {e}")
+            return None
     @database_sync_to_async
     def _update_driver_location(self, lng, lat):
-        from servers.redis import add_driver_location
-        return add_driver_location(self.driver_id, lng=lng, lat=lat)
+        from servers.driver.utils import update_driver_location
+        return update_driver_location(self.driver_id, lng=lng, lat=lat)
 
     @database_sync_to_async
     def _remove_driver_location(self):
-        from servers.redis import remove_driver
+        from servers.redis_client import remove_driver
         return remove_driver(self.driver_id)
-
+    @database_sync_to_async
+    def _add_driver_location(self, lng, lat):
+        from servers.redis_client import add_driver_location
+        return add_driver_location(self.driver_id, lng=lng, lat=lat)
 
 class RideRequestConsumer(AsyncWebsocketConsumer):
     """
@@ -422,12 +457,12 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _find_nearby_drivers(self, lng, lat, radius=5000, count=10):
-        from servers.redis import nearby_drivers
+        from servers.redis_client import nearby_drivers
         return nearby_drivers(lng=lng, lat=lat, radius=radius, count=count)
 
     @database_sync_to_async
     def _publish_ride_request(self, trip):
-        from servers.redis import publish_ride_request
+        from servers.redis_client import publish_ride_request
         return publish_ride_request(
             ride_id=trip.id,
             rider_id=self.user.id,
@@ -596,6 +631,15 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             'driver_id': event.get('driver_id'),
         }))
 
+    async def driver_location_update(self, event):
+        """Broadcast live driver location to riders on this trip."""
+        await self.send(text_data=json.dumps({
+            'type': 'driver_location_update',
+            'lng': event['lng'],
+            'lat': event['lat'],
+            'driver_id': event['driver_id'],
+        }))
+
     # -- Database helpers --
 
     @database_sync_to_async
@@ -645,6 +689,11 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             trip.status_id = status_obj
             trip.accepted_at = timezone.now()
             trip.save()
+
+            # Mark driver as busy in Redis so they don't get new ride requests
+            from servers.redis_client import set_driver_active_trip, remove_driver
+            set_driver_active_trip(driver.id, trip.id)
+            remove_driver(driver.id)  # Remove from nearby drivers pool
 
             # Create notification for rider
             from servers.rider.models import Notification
@@ -709,6 +758,11 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 )
 
             trip.save()
+
+            # If trip has ended, restore driver's available status
+            if status_code in ('completed', 'cancelled') and trip.driver_id:
+                from servers.redis_client import clear_driver_active_trip
+                clear_driver_active_trip(trip.driver_id.id)
 
             result = {
                 'success': True,
