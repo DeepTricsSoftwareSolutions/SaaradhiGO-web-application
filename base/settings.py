@@ -13,7 +13,7 @@ load_dotenv()
 SECRET_KEY = 'django-insecure-*5(=ti+p9y=gyu0zkoojz$b55meinl-5w*ibm)3mpkm2ybiohh'
 REDIS_URL=os.environ.get('REDIS_URL','redis://redis:6379')
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 ALLOWED_HOSTS = ['*']
 
@@ -81,6 +81,7 @@ CACHES={
     },
     
 }
+CORS_ALLOW_ALL_ORIGINS = True
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
