@@ -17,6 +17,17 @@ DEBUG = False
 
 ALLOWED_HOSTS = ['*']
 
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.onrender.com',
+]
+render_url = os.environ.get('RENDER_EXTERNAL_URL')
+if render_url:
+    CSRF_TRUSTED_ORIGINS.append(render_url)
+    
+csrf_origins = os.environ.get('CSRF_TRUSTED_ORIGINS')
+if csrf_origins:
+    CSRF_TRUSTED_ORIGINS.extend(csrf_origins.split(','))
+
 
 # Application definition
 
