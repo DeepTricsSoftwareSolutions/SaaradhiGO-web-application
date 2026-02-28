@@ -908,7 +908,6 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
         DriverEarning.objects.create(
             driver_id=trip.driver_id,
             trip_id=trip,
-            amount=amount,
             commission=commission,
             net_amount=net_amount,
         )
