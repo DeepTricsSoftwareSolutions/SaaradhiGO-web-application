@@ -1,3 +1,8 @@
 env
 .env
 __pycache__
+firebase-credentials.json
+PRD of VahanGo.txt
+docs
+implemented_analysis.md
+staticfiles

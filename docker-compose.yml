@@ -1,35 +1,35 @@
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
+# services:
+#   redis:
+#     image: redis:7-alpine
+#     ports:
+#       - "6379:6379"
     
 
-  django:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    volumes:
-      - .:/App
-    env_file:
-      - .env
-    command: >
-      sh -c "python manage.py collectstatic --noinput &&
-             python manage.py migrate --noinput &&
-             python manage.py runserver 0.0.0.0:8000"
-    depends_on:
-      - redis
+  # django:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - .:/App
+  #   env_file:
+  #     - .env
+  #   command: >
+  #     sh -c "python manage.py collectstatic --noinput &&
+  #            python manage.py migrate --noinput &&
+  #            python manage.py runserver 0.0.0.0:8000"
+  #   depends_on:
+  #     - redis
 
-  celery:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: ["celery", "-A", "base", "worker", "-l", "INFO"]
-    volumes:
-      - .:/App
-    env_file:
-      - .env
-    depends_on:
-      - django
+  # celery:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   command: ["celery", "-A", "base", "worker", "-l", "INFO"]
+  #   volumes:
+  #     - .:/App
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     - django

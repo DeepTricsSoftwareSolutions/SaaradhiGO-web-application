@@ -13,9 +13,20 @@ load_dotenv()
 SECRET_KEY = 'django-insecure-*5(=ti+p9y=gyu0zkoojz$b55meinl-5w*ibm)3mpkm2ybiohh'
 REDIS_URL=os.environ.get('REDIS_URL','redis://redis:6379')
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 ALLOWED_HOSTS = ['*']
+
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.onrender.com',
+]
+render_url = os.environ.get('RENDER_EXTERNAL_URL')
+if render_url:
+    CSRF_TRUSTED_ORIGINS.append(render_url)
+    
+csrf_origins = os.environ.get('CSRF_TRUSTED_ORIGINS')
+if csrf_origins:
+    CSRF_TRUSTED_ORIGINS.extend(csrf_origins.split(','))
 
 
 # Application definition
@@ -81,6 +92,7 @@ CACHES={
     },
     
 }
+CORS_ALLOW_ALL_ORIGINS = True
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -135,6 +147,18 @@ DATABASES = {
     }
 }
 
+if os.environ.get('DB_HOST'):
+    DATABASES['default'] = {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.environ.get('DB_NAME'),
+        'USER': os.environ.get('DB_USER'),
+        'PASSWORD': os.environ.get('DB_PASSWORD'),
+        'HOST': os.environ.get('DB_HOST'),
+        'PORT': os.environ.get('DB_PORT', '5432'),
+        'OPTIONS': {
+            'sslmode': 'require',
+        }
+    }
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators

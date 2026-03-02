@@ -7,7 +7,7 @@ class UserModelSerializer(ModelSerializer):
         fields = [
             'id', 'username', 'full_name', 'phone_number', 'email', 
             'gender', 'dob', 'house_no', 'street', 'city', 'zip_code',
-            'emergency_contact', 'role', 'avatar', 'updated_at', 'created_at'
+            'emergency_contact', 'role', 'avatar', 'fcm_token', 'updated_at', 'created_at'
         ]
         extra_kwargs = {
             'password': {'write_only': True}

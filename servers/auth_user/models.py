@@ -15,6 +15,7 @@ class customUser(AbstractUser):
     emergency_contact = models.CharField(max_length=20, blank=True, null=True)
     role = models.CharField(max_length=20, choices=[("rider", "Rider"), ("driver", 'Driver'), ('admin', 'Admin')])
     avatar = models.CharField(max_length=512, blank=True, null=True)
+    fcm_token = models.CharField(max_length=255, blank=True, null=True)
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
     

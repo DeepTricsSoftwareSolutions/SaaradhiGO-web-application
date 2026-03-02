@@ -385,6 +385,13 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else '',
                 })
                 notified_count += 1
+                
+                await self._send_driver_push(
+                    driver_id,
+                    "New Ride Request",
+                    f"New ride request from {rider_name}",
+                    {"trip_id": str(trip.id), "type": "ride_request"}
+                )
 
         return notified_count
 
@@ -490,6 +497,16 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             return trip
         except Trip.DoesNotExist:
             return None
+
+    @database_sync_to_async
+    def _send_driver_push(self, driver_id, title, body, data):
+        from servers.driver.models import Driver
+        from servers.auth_user.services import send_push_notification
+        try:
+            driver = Driver.objects.select_related('user_id').get(id=driver_id)
+            send_push_notification(driver.user_id, title, body, data)
+        except Exception as e:
+            logger.error(f"Failed to send push to driver {driver_id}: {str(e)}")
 
 
 class TripStatusConsumer(AsyncWebsocketConsumer):
@@ -702,6 +719,14 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 title='Ride Accepted',
                 message=f'Driver {driver.user_id.full_name} has accepted your ride.',
             )
+            
+            from servers.auth_user.services import send_push_notification
+            send_push_notification(
+                trip.user_id, 
+                "Ride Accepted", 
+                f"Driver {driver.user_id.full_name} has accepted your ride.",
+                {"trip_id": str(trip.id), "type": "ride_accepted"}
+            )
 
             return {
                 'success': True,
@@ -733,6 +758,13 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             # Set timestamps based on status
             if status_code == 'in_progress':
                 trip.started_at = timezone.now()
+                from servers.auth_user.services import send_push_notification
+                send_push_notification(
+                    trip.user_id,
+                    "Ride Started",
+                    "Your ride is now in progress.",
+                    {"trip_id": str(trip.id), "type": "ride_started"}
+                )
             elif status_code == 'completed':
                 trip.completed_at = timezone.now()
                 # Create payment on trip completion
@@ -746,6 +778,14 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                     title='Ride Completed',
                     message=f'Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}',
                 )
+                
+                from servers.auth_user.services import send_push_notification
+                send_push_notification(
+                    trip.user_id,
+                    "Ride Completed",
+                    f"Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}",
+                    {"trip_id": str(trip.id), "type": "ride_completed"}
+                )
             elif status_code == 'cancelled':
                 trip.cancelled_at = timezone.now()
                 self._process_refund_on_cancel(trip)
@@ -755,6 +795,14 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                     user_id=trip.user_id,
                     title='Ride Cancelled',
                     message=f'Your ride has been cancelled.',
+                )
+                
+                from servers.auth_user.services import send_push_notification
+                send_push_notification(
+                    trip.user_id,
+                    "Ride Cancelled",
+                    "Your ride has been cancelled.",
+                    {"trip_id": str(trip.id), "type": "ride_cancelled"}
                 )
 
             trip.save()
@@ -860,7 +908,6 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
         DriverEarning.objects.create(
             driver_id=trip.driver_id,
             trip_id=trip,
-            amount=amount,
             commission=commission,
             net_amount=net_amount,
         )
