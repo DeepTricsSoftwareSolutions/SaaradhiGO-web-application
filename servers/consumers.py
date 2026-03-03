@@ -25,10 +25,13 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
 
         # Verify user is a driver
         self.driver = await self._get_driver()
-        print(f"WS driver check: {self.driver}")
         if not self.driver:
             print("WSREJECT 4003: User is not a driver")
             await self.close(code=4003)
+            return
+        if self.driver.approved==False:
+            print("WSREJECT 4004: User is not approved")
+            await self.close(code=4004)
             return
         lat = self.scope.get('lat')
         lng = self.scope.get('lng')
@@ -274,6 +277,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                 destination_lng=destination_lng,
                 pickup_address=pickup_address,
                 destination_address=destination_address,
+                vehicle_type=vehicle_type,
             )
 
             if notified_count > 0:
@@ -328,6 +332,11 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             'message': 'Retrying — searching for nearby drivers...'
         }))
 
+        # Get vehicle type from the trip's requested_vehicle_type
+        vt_name = None
+        if trip.requested_vehicle_type:
+            vt_name = await database_sync_to_async(lambda: trip.requested_vehicle_type.type)()
+
         notified_count = await self._notify_nearby_drivers(
             trip=trip,
             pickup_lng=float(trip.pickup_long),
@@ -337,6 +346,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             pickup_address=trip.pickup_address or '',
             destination_address=trip.destination_address or '',
             radius=radius,
+            vehicle_type=vt_name,
         )
 
         if notified_count > 0:
@@ -350,12 +360,14 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
     async def _notify_nearby_drivers(self, trip, pickup_lng, pickup_lat,
                                       destination_lat, destination_lng,
                                       pickup_address, destination_address,
-                                      radius=5000):
+                                      radius=5000, vehicle_type=None):
         """
         Find nearby drivers and send them a ride request via WebSocket.
+        Filters by vehicle_type if provided.
         Returns the number of drivers notified.
         """
-        nearby = await self._find_nearby_drivers(pickup_lng, pickup_lat, radius=radius)
+        # Fetch more candidates from Redis to allow for post-filtering
+        nearby = await self._find_nearby_drivers(pickup_lng, pickup_lat, radius=radius, count=50)
 
         if not nearby:
             await self.send(text_data=json.dumps({
@@ -365,33 +377,53 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             }))
             return 0
 
-        rider_name = await self._get_rider_name()
-        notified_count = 0
+        # Extract driver IDs from Redis results
+        all_driver_ids = []
         for driver_info in nearby:
             driver_key = driver_info[0] if isinstance(driver_info, (list, tuple)) else driver_info
             if isinstance(driver_key, str) and driver_key.startswith('driver:'):
-                driver_id = driver_key.split(':')[1]
-                driver_group = f'driver_{driver_id}'
-                await self.channel_layer.group_send(driver_group, {
-                    'type': 'ride_request',
-                    'trip_id': trip.id,
-                    'rider_name': rider_name,
-                    'pickup_lat': str(pickup_lat),
-                    'pickup_lng': str(pickup_lng),
-                    'destination_lat': str(destination_lat),
-                    'destination_lng': str(destination_lng),
-                    'pickup_address': pickup_address,
-                    'destination_address': destination_address,
-                    'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else '',
-                })
-                notified_count += 1
-                
-                await self._send_driver_push(
-                    driver_id,
-                    "New Ride Request",
-                    f"New ride request from {rider_name}",
-                    {"trip_id": str(trip.id), "type": "ride_request"}
-                )
+                all_driver_ids.append(driver_key.split(':')[1])
+
+        # Filter by vehicle type if specified
+        if vehicle_type and all_driver_ids:
+            valid_driver_ids = await self._filter_drivers_by_vehicle_type(
+                all_driver_ids, vehicle_type
+            )
+        else:
+            valid_driver_ids = all_driver_ids
+
+        if not valid_driver_ids:
+            await self.send(text_data=json.dumps({
+                'type': 'no_drivers',
+                'trip_id': trip.id,
+                'message': f'No nearby drivers with {vehicle_type or "any"} vehicle found. Please try again shortly.'
+            }))
+            return 0
+
+        rider_name = await self._get_rider_name()
+        notified_count = 0
+        for driver_id in valid_driver_ids:
+            driver_group = f'driver_{driver_id}'
+            await self.channel_layer.group_send(driver_group, {
+                'type': 'ride_request',
+                'trip_id': trip.id,
+                'rider_name': rider_name,
+                'pickup_lat': str(pickup_lat),
+                'pickup_lng': str(pickup_lng),
+                'destination_lat': str(destination_lat),
+                'destination_lng': str(destination_lng),
+                'pickup_address': pickup_address,
+                'destination_address': destination_address,
+                'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else '',
+            })
+            notified_count += 1
+
+            await self._send_driver_push(
+                driver_id,
+                "New Ride Request",
+                f"New ride request from {rider_name}",
+                {"trip_id": str(trip.id), "type": "ride_request"}
+            )
 
         return notified_count
 
@@ -417,6 +449,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
         from decimal import Decimal
         from servers.ride.models import Trip, FarePricing
         from servers.ride.utils import estimate_amount
+        from servers.driver.models import VehicleType
         from django.db import transaction
 
         try:
@@ -428,6 +461,11 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                 dist, dur = 0, 0
 
             fare = estimate_amount(dist, dur, vehicle_type=vehicle_type)
+
+            # Resolve VehicleType for storing on Trip
+            requested_vt = None
+            if vehicle_type:
+                requested_vt = VehicleType.objects.filter(type__iexact=vehicle_type).first()
 
             with transaction.atomic():
                 trip = Trip.objects.create(
@@ -441,6 +479,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     estimated_fare=fare['total_fare'],
                     estimated_distance_km=Decimal(str(dist)) if dist else None,
                     surge_multiplier=fare['surge_multiplier'],
+                    requested_vehicle_type=requested_vt,
                 )
 
                 FarePricing.objects.create(
@@ -463,7 +502,22 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def _find_nearby_drivers(self, lng, lat, radius=5000, count=10):
+    def _filter_drivers_by_vehicle_type(self, driver_ids, vehicle_type):
+        """
+        Filter a list of driver IDs to only those with an active vehicle
+        matching the requested vehicle type.
+        """
+        from servers.driver.models import Vehicle
+        return list(
+            Vehicle.objects.filter(
+                driver_id__id__in=driver_ids,
+                vehicle_type_id__type__iexact=vehicle_type,
+                status='active',
+            ).values_list('driver_id__id', flat=True).distinct()
+        )
+
+    @database_sync_to_async
+    def _find_nearby_drivers(self, lng, lat, radius=5000, count=50):
         from servers.redis_client import nearby_drivers
         return nearby_drivers(lng=lng, lat=lat, radius=radius, count=count)
 

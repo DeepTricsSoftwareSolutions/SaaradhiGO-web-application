@@ -195,6 +195,12 @@ def ride_request(request):
     )
     estimated_fare = fare['total_fare']
 
+    # Resolve VehicleType for storing on Trip
+    from servers.driver.models import VehicleType, Vehicle
+    requested_vt = None
+    if vehicle_type:
+        requested_vt = VehicleType.objects.filter(type__iexact=vehicle_type).first()
+
     try:
         with transaction.atomic():
             trip_obj = Trip.objects.create(
@@ -208,6 +214,7 @@ def ride_request(request):
                 estimated_fare=estimated_fare,
                 estimated_distance_km=Decimal(str(distance_km)) if distance_km else None,
                 surge_multiplier=fare['surge_multiplier'],
+                requested_vehicle_type=requested_vt,
             )
 
             # Create FarePricing breakdown record
@@ -230,8 +237,26 @@ def ride_request(request):
                 destination_lat=destination_lat,
             )
 
-        # Find nearby drivers (informational for REST response)
-        drivers = nearby_drivers(lng=pickup_long, lat=pickup_lat, radius=5000, count=10)
+        # Find nearby drivers and filter by vehicle type
+        drivers = nearby_drivers(lng=pickup_long, lat=pickup_lat, radius=5000, count=50)
+        nearby_count = 0
+        if drivers:
+            if vehicle_type:
+                # Extract driver IDs from Redis results
+                driver_ids = []
+                for d in drivers:
+                    dk = d[0] if isinstance(d, (list, tuple)) else d
+                    if isinstance(dk, str) and dk.startswith('driver:'):
+                        driver_ids.append(dk.split(':')[1])
+                # Filter by vehicle type
+                if driver_ids:
+                    nearby_count = Vehicle.objects.filter(
+                        driver_id__id__in=driver_ids,
+                        vehicle_type_id__type__iexact=vehicle_type,
+                        status='active',
+                    ).values('driver_id').distinct().count()
+            else:
+                nearby_count = len(drivers)
 
         return success_response(
             {
@@ -243,7 +268,7 @@ def ride_request(request):
                     'time_fare': str(fare['time_fare']),
                     'surge_multiplier': str(fare['surge_multiplier']),
                 },
-                'nearby_drivers_count': len(drivers) if drivers else 0,
+                'nearby_drivers_count': nearby_count,
                 'message': 'Ride request created successfully',
             },
             status.HTTP_201_CREATED

@@ -16,6 +16,7 @@ class Trip(models.Model):
     user_id=models.ForeignKey(User,on_delete=models.CASCADE,related_name='trips')
     driver_id=models.ForeignKey(Driver,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)
     vehicle_id=models.ForeignKey(Vehicle,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)
+    requested_vehicle_type=models.ForeignKey(VehicleType,on_delete=models.SET_NULL,null=True,blank=True,related_name='requested_trips')
     status_id=models.ForeignKey(TripStatus,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)
     requested_at=models.DateTimeField(auto_now_add=True)
     accepted_at=models.DateTimeField(blank=True,null=True)
