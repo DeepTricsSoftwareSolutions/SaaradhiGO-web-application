@@ -80,7 +80,7 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None):
     Args:
         distance_km: Distance in kilometers (from frontend/Google Maps)
         duration_min: Duration in minutes (from frontend/Google Maps)
-        vehicle_type: Vehicle type name (e.g. 'sedan', 'suv') or None for defaults
+        vehicle_type: Vehicle type name (e.g. 'bike', 'auto', 'car', 'suv', 'luxury') or None for defaults
     
     Returns:
         dict: {
@@ -102,13 +102,6 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None):
         distance_km = Decimal('0')
         duration_min = Decimal('0')
 
-    # Try DB lookup
-    base_fare = DEFAULT_BASE_FARE
-    per_km = DEFAULT_PER_KM_FARE
-    per_min = DEFAULT_PER_MIN_FARE
-    min_fare = DEFAULT_MIN_FARE
-    night_surge = DEFAULT_NIGHT_SURGE
-    source = 'default'
 
     if vehicle_type:
         try:
@@ -116,6 +109,7 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None):
             from servers.driver.models import VehicleType
 
             vt = VehicleType.objects.filter(type__iexact=vehicle_type).first()
+            print(vt)
             if vt:
                 pricing = VehicleFarePricing.objects.filter(vehicle_type_id=vt).first()
                 if pricing:
@@ -131,7 +125,8 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None):
                 logger.info(f"Vehicle type '{vehicle_type}' not found, using defaults")
         except Exception as e:
             logger.warning(f"DB lookup failed for vehicle type '{vehicle_type}': {e}, using defaults")
-
+    else:
+        raise ValueError("Vehicle type is required")
     # Calculate fare components
     distance_fare = per_km * distance_km
     time_fare = per_min * duration_min

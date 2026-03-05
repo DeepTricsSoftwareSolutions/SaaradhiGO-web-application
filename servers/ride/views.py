@@ -115,174 +115,174 @@ def estimate_fare(request):
     }, status.HTTP_200_OK)
 
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def ride_request(request):
-    """
-    Create a new ride request.
+# @api_view(['POST'])
+# @permission_classes([IsAuthenticated])
+# def ride_request(request):
+#     """
+#     Create a new ride request.
     
-    Expected request data:
-    {
-        "pickup_lat": float,
-        "pickup_long": float,
-        "destination_lat": float,
-        "destination_long": float,
-        "pickup_address": str (optional),
-        "destination_address": str (optional),
-        "distance_km": float,
-        "duration_min": float,
-        "vehicle_type": str (optional, e.g. "sedan")
-    }
-    """
-    pickup_lat = request.data.get('pickup_lat')
-    pickup_long = request.data.get('pickup_long')
-    destination_lat = request.data.get('destination_lat')
-    destination_long = request.data.get('destination_long')
-    pickup_address = request.data.get('pickup_address', '')
-    destination_address = request.data.get('destination_address', '')
-    distance_km = request.data.get('distance_km')
-    duration_min = request.data.get('duration_min')
-    vehicle_type = request.data.get('vehicle_type')
+#     Expected request data:
+#     {
+#         "pickup_lat": float,
+#         "pickup_long": float,
+#         "destination_lat": float,
+#         "destination_long": float,
+#         "pickup_address": str (optional),
+#         "destination_address": str (optional),
+#         "distance_km": float,
+#         "duration_min": float,
+#         "vehicle_type": str (optional, e.g. "sedan")
+#     }
+#     """
+#     pickup_lat = request.data.get('pickup_lat')
+#     pickup_long = request.data.get('pickup_long')
+#     destination_lat = request.data.get('destination_lat')
+#     destination_long = request.data.get('destination_long')
+#     pickup_address = request.data.get('pickup_address', '')
+#     destination_address = request.data.get('destination_address', '')
+#     distance_km = request.data.get('distance_km')
+#     duration_min = request.data.get('duration_min')
+#     vehicle_type = request.data.get('vehicle_type')
 
-    # Validate pickup coordinates
-    if not pickup_lat or not pickup_long:
-        return error_response(
-            code='MISSING_FIELDS',
-            message='Pickup latitude and longitude are required',
-            field='pickup_coordinates',
-            issue='pickup_lat and pickup_long must be provided',
-            status=status.HTTP_400_BAD_REQUEST
-        )
+#     # Validate pickup coordinates
+#     if not pickup_lat or not pickup_long:
+#         return error_response(
+#             code='MISSING_FIELDS',
+#             message='Pickup latitude and longitude are required',
+#             field='pickup_coordinates',
+#             issue='pickup_lat and pickup_long must be provided',
+#             status=status.HTTP_400_BAD_REQUEST
+#         )
 
-    # Validate destination coordinates
-    if not destination_lat or not destination_long:
-        return error_response(
-            code='MISSING_FIELDS',
-            message='Destination latitude and longitude are required',
-            field='destination_coordinates',
-            issue='destination_lat and destination_long must be provided',
-            status=status.HTTP_400_BAD_REQUEST
-        )
+#     # Validate destination coordinates
+#     if not destination_lat or not destination_long:
+#         return error_response(
+#             code='MISSING_FIELDS',
+#             message='Destination latitude and longitude are required',
+#             field='destination_coordinates',
+#             issue='destination_lat and destination_long must be provided',
+#             status=status.HTTP_400_BAD_REQUEST
+#         )
 
-    # Validate coordinate types
-    try:
-        pickup_lat = float(pickup_lat)
-        pickup_long = float(pickup_long)
-        destination_lat = float(destination_lat)
-        destination_long = float(destination_long)
-    except (ValueError, TypeError):
-        return error_response(
-            code='INVALID_TYPE',
-            message='Coordinates must be valid numbers',
-            field='coordinates',
-            issue='All coordinate fields must be floats',
-            status=status.HTTP_400_BAD_REQUEST
-        )
+#     # Validate coordinate types
+#     try:
+#         pickup_lat = float(pickup_lat)
+#         pickup_long = float(pickup_long)
+#         destination_lat = float(destination_lat)
+#         destination_long = float(destination_long)
+#     except (ValueError, TypeError):
+#         return error_response(
+#             code='INVALID_TYPE',
+#             message='Coordinates must be valid numbers',
+#             field='coordinates',
+#             issue='All coordinate fields must be floats',
+#             status=status.HTTP_400_BAD_REQUEST
+#         )
 
-    # Parse distance and duration (optional but recommended)
-    try:
-        distance_km = float(distance_km) if distance_km is not None else None
-        duration_min = float(duration_min) if duration_min is not None else None
-    except (ValueError, TypeError):
-        distance_km = None
-        duration_min = None
+#     # Parse distance and duration (optional but recommended)
+#     try:
+#         distance_km = float(distance_km) if distance_km is not None else None
+#         duration_min = float(duration_min) if duration_min is not None else None
+#     except (ValueError, TypeError):
+#         distance_km = None
+#         duration_min = None
 
-    # Estimate fare
-    fare = estimate_amount(
-        distance_km=distance_km or 0,
-        duration_min=duration_min or 0,
-        vehicle_type=vehicle_type
-    )
-    estimated_fare = fare['total_fare']
+#     # Estimate fare
+#     fare = estimate_amount(
+#         distance_km=distance_km or 0,
+#         duration_min=duration_min or 0,
+#         vehicle_type=vehicle_type
+#     )
+#     estimated_fare = fare['total_fare']
 
-    # Resolve VehicleType for storing on Trip
-    from servers.driver.models import VehicleType, Vehicle
-    requested_vt = None
-    if vehicle_type:
-        requested_vt = VehicleType.objects.filter(type__iexact=vehicle_type).first()
+#     # Resolve VehicleType for storing on Trip
+#     from servers.driver.models import VehicleType, Vehicle
+#     requested_vt = None
+#     if vehicle_type:
+#         requested_vt = VehicleType.objects.filter(type__iexact=vehicle_type).first()
 
-    try:
-        with transaction.atomic():
-            trip_obj = Trip.objects.create(
-                user_id=request.user,
-                pickup_lat=pickup_lat,
-                pickup_long=pickup_long,
-                destination_lat=destination_lat,
-                destination_long=destination_long,
-                pickup_address=pickup_address,
-                destination_address=destination_address,
-                estimated_fare=estimated_fare,
-                estimated_distance_km=Decimal(str(distance_km)) if distance_km else None,
-                surge_multiplier=fare['surge_multiplier'],
-                requested_vehicle_type=requested_vt,
-            )
+#     try:
+#         with transaction.atomic():
+#             trip_obj = Trip.objects.create(
+#                 user_id=request.user,
+#                 pickup_lat=pickup_lat,
+#                 pickup_long=pickup_long,
+#                 destination_lat=destination_lat,
+#                 destination_long=destination_long,
+#                 pickup_address=pickup_address,
+#                 destination_address=destination_address,
+#                 estimated_fare=estimated_fare,
+#                 estimated_distance_km=Decimal(str(distance_km)) if distance_km else None,
+#                 surge_multiplier=fare['surge_multiplier'],
+#                 requested_vehicle_type=requested_vt,
+#             )
 
-            # Create FarePricing breakdown record
-            FarePricing.objects.create(
-                trip_id=trip_obj,
-                base_fare=fare['base_fare'],
-                distance_fare=fare['distance_fare'],
-                time_fare=fare['time_fare'],
-                surge_multiplier=fare['surge_multiplier'],
-                total_fare=fare['total_fare'],
-            )
+#             # Create FarePricing breakdown record
+#             FarePricing.objects.create(
+#                 trip_id=trip_obj,
+#                 base_fare=fare['base_fare'],
+#                 distance_fare=fare['distance_fare'],
+#                 time_fare=fare['time_fare'],
+#                 surge_multiplier=fare['surge_multiplier'],
+#                 total_fare=fare['total_fare'],
+#             )
 
-            # Publish ride request to Redis Stream
-            publish_ride_request(
-                ride_id=trip_obj.id,
-                rider_id=request.user.id,
-                pickup_lng=pickup_long,
-                pickup_lat=pickup_lat,
-                destination_lng=destination_long,
-                destination_lat=destination_lat,
-            )
+#             # Publish ride request to Redis Stream
+#             publish_ride_request(
+#                 ride_id=trip_obj.id,
+#                 rider_id=request.user.id,
+#                 pickup_lng=pickup_long,
+#                 pickup_lat=pickup_lat,
+#                 destination_lng=destination_long,
+#                 destination_lat=destination_lat,
+#             )
 
-        # Find nearby drivers and filter by vehicle type
-        drivers = nearby_drivers(lng=pickup_long, lat=pickup_lat, radius=5000, count=50)
-        nearby_count = 0
-        if drivers:
-            if vehicle_type:
-                # Extract driver IDs from Redis results
-                driver_ids = []
-                for d in drivers:
-                    dk = d[0] if isinstance(d, (list, tuple)) else d
-                    if isinstance(dk, str) and dk.startswith('driver:'):
-                        driver_ids.append(dk.split(':')[1])
-                # Filter by vehicle type
-                if driver_ids:
-                    nearby_count = Vehicle.objects.filter(
-                        driver_id__id__in=driver_ids,
-                        vehicle_type_id__type__iexact=vehicle_type,
-                        status='active',
-                    ).values('driver_id').distinct().count()
-            else:
-                nearby_count = len(drivers)
+#         # Find nearby drivers and filter by vehicle type
+#         drivers = nearby_drivers(lng=pickup_long, lat=pickup_lat, radius=5000, count=50)
+#         nearby_count = 0
+#         if drivers:
+#             if vehicle_type:
+#                 # Extract driver IDs from Redis results
+#                 driver_ids = []
+#                 for d in drivers:
+#                     dk = d[0] if isinstance(d, (list, tuple)) else d
+#                     if isinstance(dk, str) and dk.startswith('driver:'):
+#                         driver_ids.append(dk.split(':')[1])
+#                 # Filter by vehicle type
+#                 if driver_ids:
+#                     nearby_count = Vehicle.objects.filter(
+#                         driver_id__id__in=driver_ids,
+#                         vehicle_type_id__type__iexact=vehicle_type,
+#                         status='active',
+#                     ).values('driver_id').distinct().count()
+#             else:
+#                 nearby_count = len(drivers)
 
-        return success_response(
-            {
-                'trip_id': trip_obj.id,
-                'estimated_fare': str(trip_obj.estimated_fare),
-                'fare_breakdown': {
-                    'base_fare': str(fare['base_fare']),
-                    'distance_fare': str(fare['distance_fare']),
-                    'time_fare': str(fare['time_fare']),
-                    'surge_multiplier': str(fare['surge_multiplier']),
-                },
-                'nearby_drivers_count': nearby_count,
-                'message': 'Ride request created successfully',
-            },
-            status.HTTP_201_CREATED
-        )
+#         return success_response(
+#             {
+#                 'trip_id': trip_obj.id,
+#                 'estimated_fare': str(trip_obj.estimated_fare),
+#                 'fare_breakdown': {
+#                     'base_fare': str(fare['base_fare']),
+#                     'distance_fare': str(fare['distance_fare']),
+#                     'time_fare': str(fare['time_fare']),
+#                     'surge_multiplier': str(fare['surge_multiplier']),
+#                 },
+#                 'nearby_drivers_count': nearby_count,
+#                 'message': 'Ride request created successfully',
+#             },
+#             status.HTTP_201_CREATED
+#         )
 
-    except Exception as e:
-        logger.error(f"Error creating ride request: {str(e)}")
-        return error_response(
-            code='INTERNAL_ERROR',
-            message='Failed to create ride request',
-            field='general',
-            issue=str(e),
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+#     except Exception as e:
+#         logger.error(f"Error creating ride request: {str(e)}")
+#         return error_response(
+#             code='INTERNAL_ERROR',
+#             message='Failed to create ride request',
+#             field='general',
+#             issue=str(e),
+#             status=status.HTTP_500_INTERNAL_SERVER_ERROR
+#         )
 
 
 class TripPagination(PageNumberPagination):

@@ -13,6 +13,7 @@ class Driver(models.Model):
     total_trips=models.IntegerField(default=0)
     ratings=models.DecimalField(max_digits=3,decimal_places=2,default=0.00)
     approved=models.BooleanField(default=False)
+    active_vehicle=models.ForeignKey('Vehicle',on_delete=models.SET_NULL,null=True,blank=True)
     def __str__(self) -> str:
         return self.user_id.full_name if self.user_id.full_name else self.user_id.phone_number
 class VehicleType(models.Model):

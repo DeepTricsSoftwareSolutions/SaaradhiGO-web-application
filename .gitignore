@@ -7,3 +7,5 @@ docs
 implemented_analysis.md
 staticfiles
 .agents
+openapi.yaml
+postman_collection.json

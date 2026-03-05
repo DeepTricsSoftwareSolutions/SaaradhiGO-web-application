@@ -42,3 +42,29 @@ def update_driver_location(driver_id, lng, lat):
         },
         status_code=status.HTTP_200_OK
     )
+
+def create_driver_earning(trip):
+    """Calculate and create DriverEarning record."""
+    from servers.driver.models import DriverEarning
+    from django.conf import settings
+    from decimal import Decimal
+
+    if not trip.driver_id:
+        return
+
+    # Skip if already exists
+    if DriverEarning.objects.filter(trip_id=trip).exists():
+        return
+
+    amount = trip.final_fare or trip.estimated_fare or Decimal('0.00')
+    commission_rate = getattr(settings, 'PLATFORM_COMMISSION_PERCENT', 20)
+    
+    commission = (amount * Decimal(commission_rate)) / Decimal(100)
+    net_amount = amount - commission
+
+    DriverEarning.objects.create(
+        driver_id=trip.driver_id,
+        trip_id=trip,
+        commission=commission,
+        net_amount=net_amount,
+    )
