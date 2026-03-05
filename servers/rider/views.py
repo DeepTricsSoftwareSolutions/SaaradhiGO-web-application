@@ -25,12 +25,10 @@ def save_favorite_locations(request):
     }
     """
     try:
-        data = copy.copy(request.data)
-        data['user_id'] = request.user.id
-        instance = FavoritePlaceSerializer(data=data)
-        
+        instance = FavoritePlaceSerializer(data=request.data)
+
         if instance.is_valid():
-            instance.save()
+            instance.save(user_id=request.user)
             return success_response(
                 {"location": instance.data},
                 status.HTTP_201_CREATED
