@@ -1,12 +1,15 @@
 from rest_framework import serializers
-from .models import Vehicle, VehicleType, DriverEarning
+from .models import Vehicle, VehicleType, DriverEarning, Driver
 
 
 class VehicleTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = VehicleType
         fields = ['id', 'type', 'description']
-
+class DriverProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Driver
+        fields = "__all__"
 
 class VehicleSerializer(serializers.ModelSerializer):
     vehicle_type = VehicleTypeSerializer(source='vehicle_type_id', read_only=True)

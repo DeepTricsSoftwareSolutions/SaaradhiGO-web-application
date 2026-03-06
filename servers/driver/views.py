@@ -4,8 +4,10 @@ from servers.redis_client import add_driver_location,remove_driver
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
+from .serializers import DriverProfileSerializer
 from .utils import update_driver_location
 from .permissions import IsDriver
+from .models import Vehicle
 logger = logging.getLogger(__name__)
 
 
@@ -333,3 +335,40 @@ def delete_vehicle(request, vehicle_id):
 
     vehicle.delete()
     return success_response({'message': 'Vehicle deleted successfully'}, status.HTTP_200_OK)
+
+@api_view(['PATCH'])
+@permission_classes([IsDriver])
+def update_driver_profile(request):
+    """Update a driver profile.
+    sample request: {
+        "active_vehicle": int
+    }
+
+    """
+
+    driver = request.user.driver
+    vehicle_id= request.data.get('active_vehicle')
+    if vehicle_id:
+        try:
+            vehicle = Vehicle.objects.get(id=vehicle_id, driver_id=driver)
+            driver.active_vehicle=vehicle
+            driver.save()
+            return success_response(DriverProfileSerializer(driver).data, status.HTTP_200_OK)
+        except Vehicle.DoesNotExist:
+            return error_response(
+                code='NOT_FOUND',
+                message='Vehicle not found',
+                field='vehicle_id',
+                issue=f'Vehicle {vehicle} not found or does not belong to you',
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return error_response(
+                code='VALIDATION_ERROR',
+                message='Invalid driver profile data',
+                field='active_vehicle',
+                issue=str(e),
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    else:
+        return error_response(code='VALIDATION_ERROR',message='Invalid driver profile data',field='active_vehicle',issue='Invalid vehicle id',status=status.HTTP_400_BAD_REQUEST)

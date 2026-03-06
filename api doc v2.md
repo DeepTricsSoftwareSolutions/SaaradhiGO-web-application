@@ -192,7 +192,7 @@ Exchanges a valid refresh token for a new access token.
   ```json
   {
       "vehicle_number": "TS09EA1234",
-      "vehicle_type": "sedan",
+      "vehicle_type": "car",
       "brand": "Maruti Suzuki",
       "model": "Dzire",
       "color": "White",
