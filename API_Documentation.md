@@ -448,3 +448,95 @@ Connections require authentication via Query Parameters: `?token=<access_token>`
   "timestamp": "2024-01-01T12:00:00Z"
 }
 ```
+
+---
+
+### 3.6 Admin APIs 
+
+Admin APIs are secured and require the authenticated user to hold an `admin` role and have `is_superuser` privileges.
+
+#### **`GET /auth/admin/users/`**: List Users
+- **Description:** List all users across the platform with pagination.
+- **Auth Required:** Yes (Admin role)
+- **Query Params:** 
+  - `role`: string (`rider`, `driver`, `admin`)
+  - `is_active`: boolean (`true`, `false`)
+  - `page`: integer
+  - `page_size`: integer
+- **Success Response (200 OK):** Paginated list of User objects.
+
+#### **`GET /driver/admin/`**: List Drivers
+- **Description:** List all drivers on the platform with filtering and pagination.
+- **Auth Required:** Yes (Admin role)
+- **Query Params:**
+  - `approved`: boolean (`true`, `false`)
+  - `status`: string
+  - `page`: integer
+  - `page_size`: integer
+- **Success Response (200 OK):** Paginated list of Driver objects.
+
+#### **`GET /driver/admin/<id>/`**: Retrieve Driver Details
+- **Description:** Get detailed information for a single driver, including their user profile and registered vehicles.
+- **Auth Required:** Yes (Admin role)
+- **Success Response (200 OK):** Detailed Driver object.
+
+#### **`PATCH /driver/admin/<id>/update-kyc/`**: Update KYC Status
+- **Description:** Approve or reject KYC for a given driver.
+- **Auth Required:** Yes (Admin role)
+- **Request Body:**
+```json
+{
+  "approved": true,
+  "status": "active"
+}
+```
+- **Success Response (200 OK):** Updated Driver object.
+
+#### **`DELETE /driver/admin/<id>/delete/`**: Delete Driver
+- **Description:** Delete a driver profile and associated vehicles.
+- **Auth Required:** Yes (Admin role)
+- **Success Response (200 OK):** `{ "status": "success", "data": { "message": "Driver deleted successfully" } }`
+
+#### **`GET /ride/admin/trips/`**: List Trips
+- **Description:** List all trips across the platform with filtering and pagination.
+- **Auth Required:** Yes (Admin role)
+- **Query Params:**
+  - `status`: string (`pending` | `accepted` | `arriving` | `in_progress` | `completed` | `cancelled`)
+  - `driver_id`: integer
+  - `user_id`: integer (rider)
+  - `page`: integer
+  - `page_size`: integer
+- **Success Response (200 OK):** Paginated list of Trip objects.
+
+#### **`GET /ride/admin/live-locations/`**: Live Locations
+- **Description:** Fetch real-time active locations for all online drivers and riders from the Redis cache.
+- **Auth Required:** Yes (Admin role)
+- **Success Response (200 OK):** 
+```json
+{
+  "status": "success",
+  "data": {
+    "drivers": [...],
+    "riders": [...]
+  }
+}
+```
+
+#### **`GET /payments/admin/payments/`**: List Payments
+- **Description:** List all payments on the platform.
+- **Auth Required:** Yes (Admin role)
+- **Query Params:**
+  - `status`: string
+  - `method`: string
+  - `page`: integer
+  - `page_size`: integer
+- **Success Response (200 OK):** Paginated list of Payment objects.
+
+#### **`GET /payments/admin/transactions/`**: List Transactions
+- **Description:** List all transaction history logs.
+- **Auth Required:** Yes (Admin role)
+- **Query Params:**
+  - `status`: string
+  - `page`: integer
+  - `page_size`: integer
+- **Success Response (200 OK):** Paginated list of TransactionHistory objects.
