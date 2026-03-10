@@ -30,11 +30,13 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
             await self.close(code=4003)
             return
         if self.driver.approved==False:
-            print("WSREJECT 4004: User is not approved")
+            # print("WSREJECT 4004: User is not approved")
             await self.close(code=4004)
             return
         lat = self.scope.get('lat')
         lng = self.scope.get('lng')
+        if not(lat and lng):
+            await self.close(code=4003)
         self.driver_id = self.driver.id
         self.driver_group = f'driver_{self.driver_id}'
         
@@ -48,8 +50,8 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
         # Perform slower database/redis operations in the background of the connection
         await self._active_the_driver()
         
-        if lat and lng:
-            await self._add_driver_location(lng, lat)
+        self._add_driver_location(lng, lat)
+        
             
         # Join driver's personal group (for receiving ride requests)
         await self.channel_layer.group_add(self.driver_group, self.channel_name)
@@ -451,12 +453,19 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             except (ValueError, TypeError):
                 dist, dur = 0, 0
 
-            is_valid, straight_line_km, msg = validate_distance(dist, pickup_lat, pickup_lng, destination_lat, destination_lng)
+            is_valid, validated_km, validated_min, msg = validate_distance(dist, dur, pickup_lat, pickup_lng, destination_lat, destination_lng)
             if not is_valid:
                 logger.warning(f"Distance spoofing attempt: {msg}")
                 raise ValueError(f"Invalid distance: {msg}")
 
-            fare = estimate_amount(dist, dur, vehicle_type=vehicle_type)
+            fare = estimate_amount(
+                dist, 
+                dur, 
+                vehicle_type=vehicle_type,
+                pickup_lat=pickup_lat,
+                pickup_long=pickup_lng,
+                rider_id=self.user.id
+            )
 
             # Resolve VehicleType for storing on Trip
             requested_vt = None

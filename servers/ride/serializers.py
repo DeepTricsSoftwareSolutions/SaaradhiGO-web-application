@@ -71,7 +71,8 @@ class TripDetailSerializer(TripListSerializer):
         ]
 
     def get_fare_breakdown(self, obj):
-        pricing = obj.fare_pricing.first()
-        if pricing:
-            return FarePricingSerializer(pricing).data
+        # Uses prefetched items rather than hitting the DB
+        pricing_list = obj.fare_pricing.all()
+        if pricing_list:
+            return FarePricingSerializer(pricing_list[0]).data
         return None

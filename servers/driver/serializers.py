@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Vehicle, VehicleType, DriverEarning, Driver
+from servers.auth_user.serializers import UserModelSerializer
 
 
 class VehicleTypeSerializer(serializers.ModelSerializer):
@@ -53,3 +54,25 @@ class DriverEarningSerializer(serializers.ModelSerializer):
     class Meta:
         model = DriverEarning
         fields = ['id', 'trip_id_val', 'commission', 'net_amount']
+
+# --- Admin Serializers ---
+
+class DriverAdminListSerializer(serializers.ModelSerializer):
+    user_details = UserModelSerializer(source='user_id', read_only=True)
+
+    class Meta:
+        model = Driver
+        fields = ['id', 'user_details', 'license_doc', 'license_expiry', 'status', 'total_trips', 'ratings', 'approved', 'active_vehicle']
+
+class KYCApprovalSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Driver
+        fields = ['approved', 'status']
+
+class DriverAdminDetailSerializer(serializers.ModelSerializer):
+    user_details = UserModelSerializer(source='user_id', read_only=True)
+    vehicles = VehicleSerializer(source='vehicle_set', many=True, read_only=True)
+
+    class Meta:
+        model = Driver
+        fields = ['id', 'user_details', 'license_doc', 'license_expiry', 'status', 'total_trips', 'ratings', 'approved', 'vehicles', 'active_vehicle']

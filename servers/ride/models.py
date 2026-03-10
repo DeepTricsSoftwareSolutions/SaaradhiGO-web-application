@@ -21,7 +21,7 @@ class Trip(models.Model):
     requested_at=models.DateTimeField(auto_now_add=True)
     accepted_at=models.DateTimeField(blank=True,null=True)
     started_at=models.DateTimeField(blank=True,null=True)
-    completed_at=models.DateTimeField(blank=True,null=True)
+    completed_at=models.DateTimeField(blank=True,null=True, db_index=True)
     cancelled_at=models.DateTimeField(blank=True,null=True)
     pickup_address=models.CharField(max_length=512,blank=True,null=True)
     pickup_lat=models.DecimalField(max_digits=10,decimal_places=7)
@@ -38,6 +38,12 @@ class Trip(models.Model):
     payment_status=models.CharField(max_length=50,blank=True,null=True)
     def __str__(self):
         return f'Trip {self.id} - {self.user_id}'
+    
+    class Meta:
+        indexes = [
+            models.Index(fields=['user_id', '-requested_at']),
+            models.Index(fields=['driver_id', '-requested_at']),
+        ]
 class FarePricing(models.Model):
     trip_id=models.ForeignKey(Trip,on_delete=models.CASCADE,related_name='fare_pricing')
     base_fare=models.DecimalField(max_digits=10,decimal_places=2)

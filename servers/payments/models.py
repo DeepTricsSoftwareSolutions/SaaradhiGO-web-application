@@ -24,8 +24,8 @@ class Payment(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
 
     # Razorpay fields
-    razorpay_order_id = models.CharField(max_length=256, blank=True, null=True)
-    razorpay_payment_id = models.CharField(max_length=256, blank=True, null=True)
+    razorpay_order_id = models.CharField(max_length=256, blank=True, null=True, db_index=True)
+    razorpay_payment_id = models.CharField(max_length=256, blank=True, null=True, db_index=True)
     razorpay_signature = models.CharField(max_length=512, blank=True, null=True)
 
     # Legacy fields kept for compatibility

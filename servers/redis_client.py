@@ -313,3 +313,58 @@ def publish_ride_request(ride_id, rider_id, pickup_lng, pickup_lat, destination_
     except Exception as e:
         logger.error(f"Unexpected error publishing ride request {ride_id}: {str(e)}")
         return {"success": False, "error": "An unexpected error occurred"}
+
+
+def add_rider_ping(rider_id, lng, lat):
+    """
+    Log a rider's presence to measure demand for dynamic pricing.
+    """
+    if redis_client is None:
+        return False
+    try:
+        is_valid, _ = _validate_coordinates(lng, lat)
+        if not is_valid: return False
+        
+        member = f'rider:{rider_id}'
+        # Add to geo index for spacial querying
+        redis_client.geoadd('riders:geo', [lng, lat, member])
+        # Set a short TTL (3 minutes) to track freshness
+        redis_client.setex(f'active_rider:{rider_id}', 180, '1')
+        return True
+    except Exception as e:
+        logger.error(f"Failed to add rider ping for {rider_id}: {e}")
+        return False
+
+
+def count_nearby_active_riders(lng, lat, radius=3000):
+    """
+    Count how many unique riders exist within the radius who have 
+    pinged the system in the last 3 minutes.
+    """
+    if redis_client is None:
+        return 0
+    try:
+        is_valid, _ = _validate_coordinates(lng, lat)
+        if not is_valid: return 0
+        
+        riders = redis_client.geosearch(
+            'riders:geo',
+            longitude=lng,
+            latitude=lat,
+            radius=radius,
+            unit='m'
+        )
+        if not riders:
+            return 0
+            
+        pipeline = redis_client.pipeline()
+        for rider in riders:
+            # rider is formatted as "rider:<rider_id>"
+            rider_id = rider.split(':')[1]
+            pipeline.exists(f'active_rider:{rider_id}')
+        
+        results = pipeline.execute()
+        return sum(results)
+    except Exception as e:
+        logger.error(f"Failed to count nearby riders: {e}")
+        return 0

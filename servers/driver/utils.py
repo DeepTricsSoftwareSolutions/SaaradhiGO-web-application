@@ -7,17 +7,21 @@ from rest_framework import status
 logger = logging.getLogger(__name__)
 
 # Initialize Redis client with connection pool and error handling
+redis_client = None
 try:
-    redis_client = redis.Redis.from_url(
-        settings.REDIS_URL + '/3',
-        decode_responses=True,
-        socket_connect_timeout=5,
-        socket_keepalive=True,
-        socket_keepalive_options={} if hasattr(redis, 'SOCKET_KEEPALIVE_OPTIONS') else None
-    )
-    # Test the connection
-    redis_client.ping()
-    logger.info("Stream connection established successfully")
+    if getattr(settings, 'TESTING', False):
+        redis_client = None
+    else:
+        redis_client = redis.Redis.from_url(
+            settings.REDIS_URL + '/3',
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_keepalive=True,
+            socket_keepalive_options={} if hasattr(redis, 'SOCKET_KEEPALIVE_OPTIONS') else None
+        )
+        # Test the connection
+        redis_client.ping()
+        logger.info("Stream connection established successfully")
 except (redis.ConnectionError, redis.TimeoutError, Exception) as e:
     logger.error(f"Failed to connect to Redis: {str(e)}")
     redis_client = None

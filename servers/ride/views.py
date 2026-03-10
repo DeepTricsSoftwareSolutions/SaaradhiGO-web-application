@@ -83,20 +83,27 @@ def estimate_fare(request):
         )
 
     # Distance sanity check
-    is_valid, straight_line_km, msg = validate_distance(
-        distance_km, pickup_lat, pickup_long, destination_lat, destination_long
+    is_valid, validated_km, validated_min, msg = validate_distance(
+        distance_km, duration_min, pickup_lat, pickup_long, destination_lat, destination_long
     )
     if not is_valid:
         return error_response(
             code='DISTANCE_MISMATCH',
             message=msg,
-            field='distance_km',
-            issue=f'Straight-line distance: {straight_line_km} km',
+            field='distance_km / duration_min',
+            issue=f'Validated distance: {validated_km} km',
             status=status.HTTP_400_BAD_REQUEST
         )
 
     # Estimate fare
-    fare = estimate_amount(distance_km, duration_min, vehicle_type=vehicle_type)
+    fare = estimate_amount(
+        distance_km, 
+        duration_min, 
+        vehicle_type=vehicle_type,
+        pickup_lat=pickup_lat,
+        pickup_long=pickup_long,
+        rider_id=request.user.id
+    )
 
     return success_response({
         'estimated_fare': str(fare['total_fare']),
@@ -111,7 +118,8 @@ def estimate_fare(request):
         'pricing_source': fare['source'],
         'distance_km': distance_km,
         'duration_min': duration_min,
-        'straight_line_km': straight_line_km,
+        'validated_km': validated_km,
+        'validated_min': validated_min,
     }, status.HTTP_200_OK)
 
 
