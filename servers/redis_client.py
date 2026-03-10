@@ -368,3 +368,78 @@ def count_nearby_active_riders(lng, lat, radius=3000):
     except Exception as e:
         logger.error(f"Failed to count nearby riders: {e}")
         return 0
+
+def get_all_active_drivers():
+    """
+    Retrieve all driver locations from the geospatial index.
+    Returns:
+        list of dicts: [{'driver_id': '1', 'vehicle_type': 'car', 'lat': 17.3, 'lng': 78.4}, ...]
+    """
+    if redis_client is None:
+        return []
+    try:
+        # Get all members from geo index
+        members = redis_client.zrange(GEO_KEY, 0, -1)
+        if not members:
+            return []
+            
+        # Get positions for all members
+        positions = redis_client.geopos(GEO_KEY, *members)
+        
+        result = []
+        for member, pos in zip(members, positions):
+            if pos:
+                # member format: driver:{driver_id}:{vehicle_type}
+                parts = member.split(':')
+                if len(parts) >= 3:
+                    result.append({
+                        'driver_id': parts[1],
+                        'vehicle_type': parts[2],
+                        'lng': pos[0],
+                        'lat': pos[1]
+                    })
+        return result
+    except Exception as e:
+        logger.error(f"Failed to get active drivers: {e}")
+        return []
+
+def get_all_active_riders():
+    """
+    Retrieve all active rider locations.
+    """
+    if redis_client is None:
+        return []
+    try:
+        members = redis_client.zrange('riders:geo', 0, -1)
+        if not members:
+            return []
+            
+        positions = redis_client.geopos('riders:geo', *members)
+        
+        # Check active status
+        pipeline = redis_client.pipeline()
+        for member in members:
+            # member format: rider:{rider_id}
+            parts = member.split(':')
+            if len(parts) >= 2:
+                rider_id = parts[1]
+                pipeline.exists(f'active_rider:{rider_id}')
+            else:
+                pipeline.exists('invalid_key')
+                
+        active_statuses = pipeline.execute()
+        
+        result = []
+        for member, pos, is_active in zip(members, positions, active_statuses):
+            if pos and is_active:
+                parts = member.split(':')
+                if len(parts) >= 2:
+                    result.append({
+                        'rider_id': parts[1],
+                        'lng': pos[0],
+                        'lat': pos[1]
+                    })
+        return result
+    except Exception as e:
+        logger.error(f"Failed to get active riders: {e}")
+        return []
