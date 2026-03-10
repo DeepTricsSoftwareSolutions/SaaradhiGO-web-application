@@ -219,6 +219,10 @@ def verify_payment(request):
                 status='completed',
             )
 
+            # Create driver earning for online payment
+            from servers.driver.utils import create_driver_earning
+            create_driver_earning(trip)
+
     return success_response({
         'message': 'Payment verified successfully',
         'payment_id': payment.id,
@@ -291,6 +295,10 @@ def razorpay_webhook(request):
                             'status': 'completed',
                         }
                     )
+
+                    # Create driver earning for online payment
+                    from servers.driver.utils import create_driver_earning
+                    create_driver_earning(trip)
 
             logger.info(f"Webhook: Payment {payment.id} completed for trip {trip.id}")
             return JsonResponse({'status': 'ok'}, status=200)

@@ -25,27 +25,38 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
 
         # Verify user is a driver
         self.driver = await self._get_driver()
-        print(f"WS driver check: {self.driver}")
         if not self.driver:
             print("WSREJECT 4003: User is not a driver")
             await self.close(code=4003)
             return
+        if self.driver.approved==False:
+            # print("WSREJECT 4004: User is not approved")
+            await self.close(code=4004)
+            return
         lat = self.scope.get('lat')
         lng = self.scope.get('lng')
+        if not(lat and lng):
+            await self.close(code=4003)
         self.driver_id = self.driver.id
         self.driver_group = f'driver_{self.driver_id}'
-        await self._active_the_driver()
-        await self._add_driver_location(lng, lat)
-        # Join driver's personal group (for receiving ride requests)
-        await self.channel_layer.group_add(self.driver_group, self.channel_name)
-        # Join global online drivers group
-        await self.channel_layer.group_add('online_drivers', self.channel_name)
         
+        # Accept the connection early to prevent client timeout
         await self.accept()
         await self.send(text_data=json.dumps({
             'type': 'connection_established',
             'message': f'Driver {self.driver_id} connected',
         }))
+
+        # Perform slower database/redis operations in the background of the connection
+        await self._active_the_driver()
+        
+        self._add_driver_location(lng, lat)
+        
+            
+        # Join driver's personal group (for receiving ride requests)
+        await self.channel_layer.group_add(self.driver_group, self.channel_name)
+        # Join global online drivers group
+        await self.channel_layer.group_add('online_drivers', self.channel_name)
 
     async def disconnect(self, close_code):
         if hasattr(self, 'driver_id'):
@@ -175,7 +186,8 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
     Send:    {
         "pickup_lat": 17.385, "pickup_lng": 78.486,
         "destination_lat": 17.440, "destination_lng": 78.348,
-        "pickup_address": "...", "destination_address": "..."
+        "pickup_address": "...", "destination_address": "...",
+        "vehicle_type": "bike",
     }
     """
 
@@ -204,7 +216,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
     async def receive(self, text_data):
         """
         Receive messages from rider.
-        New request: {"pickup_lat": ..., "pickup_lng": ..., "destination_lat": ..., "destination_lng": ...}
+        New request: {"pickup_lat": ..., "pickup_lng": ..., "destination_lat": ..., "destination_lng": ..., "vehicle_type": ..., "distance_km": ..., "duration_min": ...}
         Retry:       {"action": "retry", "trip_id": <id>, "radius": <optional, meters>}
         """
         try:
@@ -227,10 +239,10 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             vehicle_type = data.get('vehicle_type')
 
             # Validate required fields
-            if not all([pickup_lat, pickup_lng, destination_lat, destination_lng]):
+            if not all([pickup_lat, pickup_lng, destination_lat, destination_lng, pickup_address, destination_address]):
                 await self.send(text_data=json.dumps({
                     'type': 'error',
-                    'message': 'pickup_lat, pickup_lng, destination_lat, destination_lng are required'
+                    'message': 'pickup_lat, pickup_lng, destination_lat, destination_lng, pickup_address, destination_address are required'
                 }))
                 return
 
@@ -274,6 +286,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                 destination_lng=destination_lng,
                 pickup_address=pickup_address,
                 destination_address=destination_address,
+                vehicle_type=vehicle_type,
             )
 
             if notified_count > 0:
@@ -304,7 +317,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
         Expected: {"action": "retry", "trip_id": int, "radius": int (optional, meters)}
         """
         trip_id = data.get('trip_id')
-        radius = data.get('radius', 5000)
+        radius = min(int(data.get('radius', 5000)), 15000)
 
         if not trip_id:
             await self.send(text_data=json.dumps({
@@ -328,6 +341,11 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             'message': 'Retrying — searching for nearby drivers...'
         }))
 
+        # Get vehicle type from the trip's requested_vehicle_type
+        vt_name = None
+        if trip.requested_vehicle_type:
+            vt_name = await database_sync_to_async(lambda: trip.requested_vehicle_type.type)()
+
         notified_count = await self._notify_nearby_drivers(
             trip=trip,
             pickup_lng=float(trip.pickup_long),
@@ -337,6 +355,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             pickup_address=trip.pickup_address or '',
             destination_address=trip.destination_address or '',
             radius=radius,
+            vehicle_type=vt_name,
         )
 
         if notified_count > 0:
@@ -350,12 +369,14 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
     async def _notify_nearby_drivers(self, trip, pickup_lng, pickup_lat,
                                       destination_lat, destination_lng,
                                       pickup_address, destination_address,
-                                      radius=5000):
+                                      radius=5000, vehicle_type=None):
         """
         Find nearby drivers and send them a ride request via WebSocket.
+        Filters by vehicle_type if provided.
         Returns the number of drivers notified.
         """
-        nearby = await self._find_nearby_drivers(pickup_lng, pickup_lat, radius=radius)
+        # Fetch more candidates from Redis to allow for post-filtering
+        nearby = await self._find_nearby_drivers(pickup_lng, pickup_lat, vehicle_type)
 
         if not nearby:
             await self.send(text_data=json.dumps({
@@ -365,33 +386,37 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             }))
             return 0
 
-        rider_name = await self._get_rider_name()
-        notified_count = 0
+        # Extract driver IDs from Redis results
+        all_driver_ids = []
         for driver_info in nearby:
             driver_key = driver_info[0] if isinstance(driver_info, (list, tuple)) else driver_info
             if isinstance(driver_key, str) and driver_key.startswith('driver:'):
-                driver_id = driver_key.split(':')[1]
-                driver_group = f'driver_{driver_id}'
-                await self.channel_layer.group_send(driver_group, {
-                    'type': 'ride_request',
-                    'trip_id': trip.id,
-                    'rider_name': rider_name,
-                    'pickup_lat': str(pickup_lat),
-                    'pickup_lng': str(pickup_lng),
-                    'destination_lat': str(destination_lat),
-                    'destination_lng': str(destination_lng),
-                    'pickup_address': pickup_address,
-                    'destination_address': destination_address,
-                    'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else '',
-                })
-                notified_count += 1
-                
-                await self._send_driver_push(
-                    driver_id,
-                    "New Ride Request",
-                    f"New ride request from {rider_name}",
-                    {"trip_id": str(trip.id), "type": "ride_request"}
-                )
+                all_driver_ids.append(driver_key.split(':')[1])
+
+        rider_name = await self._get_rider_name()
+        notified_count = 0
+        for driver_id in all_driver_ids:
+            driver_group = f'driver_{driver_id}'
+            await self.channel_layer.group_send(driver_group, {
+                'type': 'ride_request',
+                'trip_id': trip.id,
+                'rider_name': rider_name,
+                'pickup_lat': str(pickup_lat),
+                'pickup_lng': str(pickup_lng),
+                'destination_lat': str(destination_lat),
+                'destination_lng': str(destination_lng),
+                'pickup_address': pickup_address,
+                'destination_address': destination_address,
+                'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else '',
+            })
+            notified_count += 1
+
+            await self._send_driver_push(
+                driver_id,
+                "New Ride Request",
+                f"New ride request from {rider_name}",
+                {"trip_id": str(trip.id), "type": "ride_request"}
+            )
 
         return notified_count
 
@@ -416,7 +441,8 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                      distance_km=None, duration_min=None, vehicle_type=None):
         from decimal import Decimal
         from servers.ride.models import Trip, FarePricing
-        from servers.ride.utils import estimate_amount
+        from servers.ride.utils import estimate_amount, validate_distance
+        from servers.driver.models import VehicleType
         from django.db import transaction
 
         try:
@@ -427,7 +453,24 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             except (ValueError, TypeError):
                 dist, dur = 0, 0
 
-            fare = estimate_amount(dist, dur, vehicle_type=vehicle_type)
+            is_valid, validated_km, validated_min, msg = validate_distance(dist, dur, pickup_lat, pickup_lng, destination_lat, destination_lng)
+            if not is_valid:
+                logger.warning(f"Distance spoofing attempt: {msg}")
+                raise ValueError(f"Invalid distance: {msg}")
+
+            fare = estimate_amount(
+                dist, 
+                dur, 
+                vehicle_type=vehicle_type,
+                pickup_lat=pickup_lat,
+                pickup_long=pickup_lng,
+                rider_id=self.user.id
+            )
+
+            # Resolve VehicleType for storing on Trip
+            requested_vt = None
+            if vehicle_type:
+                requested_vt = VehicleType.objects.filter(type__iexact=vehicle_type).first()
 
             with transaction.atomic():
                 trip = Trip.objects.create(
@@ -441,6 +484,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     estimated_fare=fare['total_fare'],
                     estimated_distance_km=Decimal(str(dist)) if dist else None,
                     surge_multiplier=fare['surge_multiplier'],
+                    requested_vehicle_type=requested_vt,
                 )
 
                 FarePricing.objects.create(
@@ -463,9 +507,9 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def _find_nearby_drivers(self, lng, lat, radius=5000, count=10):
+    def _find_nearby_drivers(self, lng, lat, vehicle_type=None):
         from servers.redis_client import nearby_drivers
-        return nearby_drivers(lng=lng, lat=lat, radius=radius, count=count)
+        return nearby_drivers(lng=lng, lat=lat, vehicle_type=vehicle_type)
 
     @database_sync_to_async
     def _publish_ride_request(self, trip):
@@ -688,24 +732,26 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
     def _accept_trip(self):
         from servers.ride.models import Trip, TripStatus
         from django.utils import timezone
+        from django.db import transaction
 
         try:
-            trip = Trip.objects.get(id=self.trip_id)
+            with transaction.atomic():
+                trip = Trip.objects.select_for_update().get(id=self.trip_id)
 
-            # Check if already accepted
-            if trip.driver_id is not None:
-                return {'success': False, 'error': 'Trip already accepted by another driver'}
+                # Check if already accepted
+                if trip.driver_id is not None:
+                    return {'success': False, 'error': 'Trip already accepted by another driver'}
 
-            driver = self.user.driver
-            status_obj, _ = TripStatus.objects.get_or_create(
-                status_code='accepted',
-                defaults={'description': 'Trip accepted by driver'}
-            )
+                driver = self.user.driver
+                status_obj, _ = TripStatus.objects.get_or_create(
+                    status_code='accepted',
+                    defaults={'description': 'Trip accepted by driver'}
+                )
 
-            trip.driver_id = driver
-            trip.status_id = status_obj
-            trip.accepted_at = timezone.now()
-            trip.save()
+                trip.driver_id = driver
+                trip.status_id = status_obj
+                trip.accepted_at = timezone.now()
+                trip.save()
 
             # Mark driver as busy in Redis so they don't get new ride requests
             from servers.redis_client import set_driver_active_trip, remove_driver
@@ -748,6 +794,10 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
         try:
             trip = Trip.objects.get(id=self.trip_id)
+
+            if status_code == 'cancelled' and trip.status_id and trip.status_id.status_code in ['completed', 'cancelled']:
+                return {'success': False, 'error': f'Trip is already {trip.status_id.status_code}'}
+
             status_obj, _ = TripStatus.objects.get_or_create(
                 status_code=status_code,
                 defaults={'description': f'Trip {status_code}'}
@@ -769,8 +819,6 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 trip.completed_at = timezone.now()
                 # Create payment on trip completion
                 self._create_payment_on_complete(trip)
-                # Create driver earning
-                self._create_driver_earning(trip)
                 
                 from servers.rider.models import Notification
                 Notification.objects.create(
@@ -875,6 +923,9 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                     user_name=trip.user_id.full_name or trip.user_id.phone_number,
                     status='completed',
                 )
+            
+            from servers.driver.utils import create_driver_earning
+            create_driver_earning(trip)
         else:
             # Online payment — create pending payment with Razorpay order
             from servers.payments.razorpay_utils import create_razorpay_order
@@ -889,28 +940,6 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 razorpay_order_id=order['id'] if order else None,
             )
             trip.payment_status = 'pending'
-
-    def _create_driver_earning(self, trip):
-        """Calculate and create DriverEarning record."""
-        from servers.driver.models import DriverEarning
-        from django.conf import settings
-        from decimal import Decimal
-
-        if not trip.driver_id:
-            return
-
-        amount = trip.final_fare or trip.estimated_fare or Decimal('0.00')
-        commission_rate = getattr(settings, 'PLATFORM_COMMISSION_PERCENT', 20)
-        
-        commission = (amount * Decimal(commission_rate)) / Decimal(100)
-        net_amount = amount - commission
-
-        DriverEarning.objects.create(
-            driver_id=trip.driver_id,
-            trip_id=trip,
-            commission=commission,
-            net_amount=net_amount,
-        )
 
     def _process_refund_on_cancel(self, trip):
         """Process refund if payment was completed online."""

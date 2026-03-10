@@ -2,6 +2,7 @@ import redis
 import logging
 from django.conf import settings
 from servers.driver.utils import update_driver_location
+from servers.driver.models import Driver
 logger = logging.getLogger(__name__)
 
 # Initialize Redis client with connection pool and error handling
@@ -100,7 +101,7 @@ def add_driver_location(driver_id, lng, lat):
         driver_id: Unique driver identifier
         lng: Longitude coordinate
         lat: Latitude coordinate
-    
+
     Returns:
         dict: Status and message
     
@@ -126,8 +127,11 @@ def add_driver_location(driver_id, lng, lat):
         
         # Check if driver is on an active trip
         active_trip_id = get_driver_active_trip(driver_id)
-        
-        member = f'driver:{driver_id}'
+        vehicle_id = Driver.objects.get(id=driver_id).active_vehicle
+        if vehicle_id:
+            member = f'driver:{driver_id}:{vehicle_id.vehicle_type_id.type}'
+        else:
+            return {"success": False, "error": "Driver has no active vehicle"}
         res = update_driver_location(driver_id=driver_id, lat=lat, lng=lng)
         
         if active_trip_id:
@@ -144,7 +148,7 @@ def add_driver_location(driver_id, lng, lat):
 
         # Driver is available, add to geo index
         result = redis_client.geoadd(GEO_KEY, [lng, lat, member])
-        
+        print(result)
         if result is not None:
             logger.info(f"Driver {driver_id} location updated in geo index: lng={lng}, lat={lat}")
             return {"success": True, "message": "Location added successfully"}
@@ -163,7 +167,7 @@ def add_driver_location(driver_id, lng, lat):
         return {"success": False, "error": "An unexpected error occurred"}
 
 
-def nearby_drivers(lng, lat, radius=1000, count=10):
+def nearby_drivers(lng, lat, radius=5000, count=50, vehicle_type=None):
     """
     Search for nearby drivers within a specified radius.
     
@@ -192,7 +196,7 @@ def nearby_drivers(lng, lat, radius=1000, count=10):
         
         if count <= 0:
             raise ValueError("Count must be greater than 0")
-        
+
         drivers = redis_client.geosearch(
             GEO_KEY,
             longitude=lng,
@@ -206,6 +210,8 @@ def nearby_drivers(lng, lat, radius=1000, count=10):
         )
         
         logger.info(f"Found {len(drivers) if drivers else 0} nearby drivers at lng={lng}, lat={lat}")
+        if vehicle_type:
+            drivers = [driver for driver in drivers if driver[0].split(':')[2] == vehicle_type]
         return drivers if drivers else []
         
     except ValueError as e:
@@ -236,8 +242,11 @@ def remove_driver(driver_id):
     try:
         if not driver_id:
             raise ValueError("driver_id cannot be empty")
+        vehicle=Driver.objects.get(id=driver_id).active_vehicle
+        if not vehicle:
+            return {"success": False, "error": "Driver has no active vehicle"}
         
-        member = f'driver:{driver_id}'
+        member = f'driver:{driver_id}:{vehicle.vehicle_type_id.type}'
         result = redis_client.zrem(GEO_KEY, member)
         
         if result > 0:
@@ -304,3 +313,58 @@ def publish_ride_request(ride_id, rider_id, pickup_lng, pickup_lat, destination_
     except Exception as e:
         logger.error(f"Unexpected error publishing ride request {ride_id}: {str(e)}")
         return {"success": False, "error": "An unexpected error occurred"}
+
+
+def add_rider_ping(rider_id, lng, lat):
+    """
+    Log a rider's presence to measure demand for dynamic pricing.
+    """
+    if redis_client is None:
+        return False
+    try:
+        is_valid, _ = _validate_coordinates(lng, lat)
+        if not is_valid: return False
+        
+        member = f'rider:{rider_id}'
+        # Add to geo index for spacial querying
+        redis_client.geoadd('riders:geo', [lng, lat, member])
+        # Set a short TTL (3 minutes) to track freshness
+        redis_client.setex(f'active_rider:{rider_id}', 180, '1')
+        return True
+    except Exception as e:
+        logger.error(f"Failed to add rider ping for {rider_id}: {e}")
+        return False
+
+
+def count_nearby_active_riders(lng, lat, radius=3000):
+    """
+    Count how many unique riders exist within the radius who have 
+    pinged the system in the last 3 minutes.
+    """
+    if redis_client is None:
+        return 0
+    try:
+        is_valid, _ = _validate_coordinates(lng, lat)
+        if not is_valid: return 0
+        
+        riders = redis_client.geosearch(
+            'riders:geo',
+            longitude=lng,
+            latitude=lat,
+            radius=radius,
+            unit='m'
+        )
+        if not riders:
+            return 0
+            
+        pipeline = redis_client.pipeline()
+        for rider in riders:
+            # rider is formatted as "rider:<rider_id>"
+            rider_id = rider.split(':')[1]
+            pipeline.exists(f'active_rider:{rider_id}')
+        
+        results = pipeline.execute()
+        return sum(results)
+    except Exception as e:
+        logger.error(f"Failed to count nearby riders: {e}")
+        return 0

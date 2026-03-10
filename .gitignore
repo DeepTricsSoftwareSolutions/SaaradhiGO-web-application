@@ -6,3 +6,9 @@ PRD of VahanGo.txt
 docs
 implemented_analysis.md
 staticfiles
+.agents
+openapi.yaml
+postman_collection.json
+pytest.ini
+SaaradhiGo_PRD.md
+VahanGo_API_Collection.json
