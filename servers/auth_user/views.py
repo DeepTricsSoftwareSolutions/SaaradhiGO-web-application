@@ -484,3 +484,40 @@ def update_user(request):
             issue=str(e),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_user_profile(request):
+    """
+    Get authenticated user information.
+    """
+    try:
+        user_id = request.user.id
+        
+        # Retrieve user
+        try:
+            user = user_model.objects.get(id=user_id)
+        except user_model.DoesNotExist:
+            logger.error(f"User not found during get profile: {user_id}")
+            return error_response(
+                code='AUTH_USER_NOT_FOUND',
+                message='User not found',
+                field='user',
+                issue='The authenticated user does not exist',
+                status=status.HTTP_404_NOT_FOUND
+            )
+            
+        user_serializer = UserModelSerializer(user)
+        return success_response(
+            user_serializer.data,
+            status.HTTP_200_OK
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error in get_user_profile: {str(e)}")
+        return error_response(
+            code='AUTH_INTERNAL_ERROR',
+            message='An unexpected error occurred',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

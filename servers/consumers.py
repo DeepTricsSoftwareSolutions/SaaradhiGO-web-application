@@ -50,7 +50,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
         # Perform slower database/redis operations in the background of the connection
         await self._active_the_driver()
         
-        self._add_driver_location(lng, lat)
+        await self._add_driver_location(lng, lat)
         
             
         # Join driver's personal group (for receiving ride requests)
