@@ -127,6 +127,7 @@ def request_otp(request):
             )
         
         # Don't expose OTP in response for security
+        logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id}, otp: {otp}")
         return success_response(
             data={
                 'message': "OTP sent successfully",
