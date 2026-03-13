@@ -854,95 +854,114 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
     def _update_trip_status(self, status_code):
         from servers.ride.models import Trip, TripStatus
         from django.utils import timezone
+        from django.db import transaction
 
         try:
-            trip = Trip.objects.get(id=self.trip_id)
+            with transaction.atomic():
+                # select_for_update() locks the row until the transaction ends
+                trip = Trip.objects.select_for_update().get(id=self.trip_id)
+                current_status = trip.status_id.status_code if trip.status_id else None
 
-            if status_code == 'cancelled' and trip.status_id and trip.status_id.status_code in ['completed', 'cancelled']:
-                return {'success': False, 'error': f'Trip is already {trip.status_id.status_code}'}
+                # Define strict transition rules
+                allowed_transitions = {
+                    'in_progress': ['accepted'],
+                    'completed': ['in_progress'],
+                    'cancelled': ['accepted', 'in_progress'],
+                }
 
-            status_obj, _ = TripStatus.objects.get_or_create(
-                status_code=status_code,
-                defaults={'description': f'Trip {status_code}'}
-            )
+                # Enforcement of status transitions
+                if status_code in allowed_transitions:
+                    if current_status not in allowed_transitions[status_code]:
+                        return {
+                            'success': False, 
+                            'error': f'Invalid status transition: cannot change from {current_status} to {status_code}'
+                        }
 
-            trip.status_id = status_obj
+                if status_code == 'cancelled' and current_status in ['completed', 'cancelled']:
+                    return {'success': False, 'error': f'Trip is already {current_status}'}
 
-            # Set timestamps based on status
-            if status_code == 'in_progress':
-                trip.started_at = timezone.now()
-                from servers.auth_user.services import send_push_notification
-                send_push_notification(
-                    trip.user_id,
-                    "Ride Started",
-                    "Your ride is now in progress.",
-                    {"trip_id": str(trip.id), "type": "ride_started"}
-                )
-            elif status_code == 'completed':
-                trip.completed_at = timezone.now()
-                # Create payment on trip completion
-                self._create_payment_on_complete(trip)
-                
-                from servers.rider.models import Notification
-                Notification.objects.create(
-                    user_id=trip.user_id,
-                    title='Ride Completed',
-                    message=f'Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}',
-                )
-                
-                from servers.auth_user.services import send_push_notification
-                send_push_notification(
-                    trip.user_id,
-                    "Ride Completed",
-                    f"Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}",
-                    {"trip_id": str(trip.id), "type": "ride_completed"}
-                )
-            elif status_code == 'cancelled':
-                trip.cancelled_at = timezone.now()
-                self._process_refund_on_cancel(trip)
-                
-                from servers.rider.models import Notification
-                Notification.objects.create(
-                    user_id=trip.user_id,
-                    title='Ride Cancelled',
-                    message=f'Your ride has been cancelled.',
-                )
-                
-                from servers.auth_user.services import send_push_notification
-                send_push_notification(
-                    trip.user_id,
-                    "Ride Cancelled",
-                    "Your ride has been cancelled.",
-                    {"trip_id": str(trip.id), "type": "ride_cancelled"}
+                status_obj, _ = TripStatus.objects.get_or_create(
+                    status_code=status_code,
+                    defaults={'description': f'Trip {status_code}'}
                 )
 
-            trip.save()
+                trip.status_id = status_obj
 
-            # If trip has ended, restore driver's available status
-            if status_code in ('completed', 'cancelled') and trip.driver_id:
-                from servers.redis_client import clear_driver_active_trip
-                clear_driver_active_trip(trip.driver_id.id)
+                # Set timestamps based on status
+                if status_code == 'in_progress':
+                    trip.started_at = timezone.now()
+                    from servers.auth_user.services import send_push_notification
+                    send_push_notification(
+                        trip.user_id,
+                        "Ride Started",
+                        "Your ride is now in progress.",
+                        {"trip_id": str(trip.id), "type": "ride_started"}
+                    )
+                elif status_code == 'completed':
+                    trip.completed_at = timezone.now()
+                    # Create payment on trip completion within the same transaction
+                    self._create_payment_on_complete(trip)
+                    
+                    from servers.rider.models import Notification
+                    Notification.objects.create(
+                        user_id=trip.user_id,
+                        title='Ride Completed',
+                        message=f'Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}',
+                    )
+                    
+                    from servers.auth_user.services import send_push_notification
+                    send_push_notification(
+                        trip.user_id,
+                        "Ride Completed",
+                        f"Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}",
+                        {"trip_id": str(trip.id), "type": "ride_completed"}
+                    )
+                elif status_code == 'cancelled':
+                    trip.cancelled_at = timezone.now()
+                    self._process_refund_on_cancel(trip)
+                    
+                    from servers.rider.models import Notification
+                    Notification.objects.create(
+                        user_id=trip.user_id,
+                        title='Ride Cancelled',
+                        message=f'Your ride has been cancelled.',
+                    )
+                    
+                    from servers.auth_user.services import send_push_notification
+                    send_push_notification(
+                        trip.user_id,
+                        "Ride Cancelled",
+                        "Your ride has been cancelled.",
+                        {"trip_id": str(trip.id), "type": "ride_cancelled"}
+                    )
 
-            result = {
-                'success': True,
-                'message': f'Trip {status_code}',
-                'driver_id': trip.driver_id_id if trip.driver_id else None,
-                'rider_id': trip.user_id_id,
-            }
+                trip.save()
 
-            # Include payment info for completed trips
-            if status_code == 'completed':
-                payment = trip.payments.first()
-                if payment:
-                    result['payment'] = {
-                        'payment_id': payment.id,
-                        'amount': str(payment.amount),
-                        'method': payment.method,
-                        'status': payment.status,
-                        'razorpay_order_id': payment.razorpay_order_id,
-                    }
+                # If trip has ended, restore driver's available status
+                if status_code in ('completed', 'cancelled') and trip.driver_id:
+                    from servers.redis_client import clear_driver_active_trip
+                    clear_driver_active_trip(trip.driver_id.id)
 
-            return result
+                result = {
+                    'success': True,
+                    'message': f'Trip {status_code}',
+                    'driver_id': trip.driver_id_id if trip.driver_id else None,
+                    'rider_id': trip.user_id_id,
+                }
+
+                # Include payment info for completed trips
+                if status_code == 'completed':
+                    payment = trip.payments.first()
+                    if payment:
+                        result['payment'] = {
+                            'payment_id': payment.id,
+                            'amount': str(payment.amount),
+                            'method': payment.method,
+                            'status': payment.status,
+                            'razorpay_order_id': payment.razorpay_order_id,
+                        }
+
+                return result
         except Trip.DoesNotExist:
             return {'success': False, 'error': 'Trip not found'}
         except Exception as e:

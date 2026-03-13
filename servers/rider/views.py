@@ -92,6 +92,55 @@ def get_favorite_locations(request):
         )
 
 
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_favorite_location(request, location_id):
+    """
+    Delete a specific favorite location for the authenticated user.
+    
+    URL parameters:
+    - location_id: ID of the favorite location to delete (int)
+    """
+    try:
+        # Get the favorite location instance
+        location = FavoritePlace.objects.get(id=location_id, user_id=request.user)
+        
+        # Delete the location
+        location.delete()
+        
+        return success_response(
+            {"message": "Favorite location deleted successfully"},
+            status.HTTP_200_OK
+        )
+    except FavoritePlace.DoesNotExist:
+        logger.warning(f"Favorite location not found for user {request.user.id}: {location_id}")
+        return error_response(
+            code='NOT_FOUND',
+            message='Favorite location not found',
+            field='location',
+            issue=f'No favorite location found with ID {location_id}',
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except AttributeError as e:
+        logger.error(f"Profile error: {str(e)}")
+        return error_response(
+            code='PROFILE_ERROR',
+            message='User profile not found',
+            field='user',
+            issue='User profile issue',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error deleting favorite location: {str(e)}")
+        return error_response(
+            code='INTERNAL_ERROR',
+            message='An unexpected error occurred',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_nearby_drivers(request):

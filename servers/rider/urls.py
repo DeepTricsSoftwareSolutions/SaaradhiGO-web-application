@@ -2,12 +2,13 @@ from django.urls import path
 from .views import (
     save_favorite_locations, get_favorite_locations, get_nearby_drivers,
     list_notifications, mark_notification_read, mark_all_notifications_read,
-    get_wallet_balance
+    get_wallet_balance,delete_favorite_location
 )
 
 urlpatterns=[
     path('locations/',save_favorite_locations),
     path('locations/all/',get_favorite_locations),
+    path('locations/<int:location_id>/delete/',delete_favorite_location),
     path('nearby/',get_nearby_drivers),
     # Notifications
     path('notifications/', list_notifications),
