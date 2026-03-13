@@ -36,6 +36,7 @@ class Trip(models.Model):
     surge_multiplier=models.DecimalField(max_digits=4,decimal_places=2,default=1.00)
     payment_method=models.CharField(max_length=50,blank=True,null=True)
     payment_status=models.CharField(max_length=50,blank=True,null=True)
+    otp=models.CharField(max_length=6,blank=True,null=True)
     def __str__(self):
         return f'Trip {self.id} - {self.user_id}'
     

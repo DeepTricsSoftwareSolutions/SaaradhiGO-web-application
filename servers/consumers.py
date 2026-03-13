@@ -3,6 +3,7 @@ import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
+from base.utils import generate_otp
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +318,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
         Expected: {"action": "retry", "trip_id": int, "radius": int (optional, meters)}
         """
         trip_id = data.get('trip_id')
-        radius = min(int(data.get('radius', 5000)), 15000)
+        radius = min(int(data.get('radius', 5000)), 5000)
 
         if not trip_id:
             await self.send(text_data=json.dumps({
@@ -424,14 +425,25 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
 
     async def trip_update(self, event):
         """Send trip status update to rider."""
-        await self.send(text_data=json.dumps({
+        response_data = {
             'type': 'trip_update',
             'trip_id': event['trip_id'],
             'status': event['status'],
             'message': event.get('message', ''),
             'driver_id': event.get('driver_id'),
             'driver_name': event.get('driver_name', ''),
-        }))
+        }
+        
+        # Add driver info and OTP if the ride was accepted
+        if event['status'] == 'accept':
+            if 'otp' in event:
+                response_data['otp'] = event['otp']
+            if 'driver_info' in event:
+                response_data['driver_info'] = event['driver_info']
+            if 'vehicle_info' in event:
+                response_data['vehicle_info'] = event['vehicle_info']
+
+        await self.send(text_data=json.dumps(response_data))
 
     # -- Database helpers --
 
@@ -643,25 +655,43 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
             if result.get('success'):
                 # Broadcast status to all participants in the trip group
-                await self.channel_layer.group_send(self.trip_group, {
+                status_event = {
                     'type': 'trip_status_update',
                     'trip_id': self.trip_id,
                     'status': action,
                     'message': result.get('message', ''),
                     'driver_id': result.get('driver_id'),
-                })
+                }
+                
+                if action == 'accept':
+                    status_event.update({
+                        'otp': result.get('otp'),
+                        'driver_info': result.get('driver_info'),
+                        'vehicle_info': result.get('vehicle_info'),
+                    })
+
+                await self.channel_layer.group_send(self.trip_group, status_event)
 
                 # Also notify the rider via their personal group
                 rider_id = result.get('rider_id')
                 if rider_id:
-                    await self.channel_layer.group_send(f'rider_{rider_id}', {
+                    rider_event = {
                         'type': 'trip_update',
                         'trip_id': self.trip_id,
                         'status': action,
                         'message': result.get('message', ''),
                         'driver_id': result.get('driver_id'),
                         'driver_name': result.get('driver_name', ''),
-                    })
+                    }
+                    
+                    if action == 'accept':
+                        rider_event.update({
+                            'otp': result.get('otp'),
+                            'driver_info': result.get('driver_info'),
+                            'vehicle_info': result.get('vehicle_info'),
+                        })
+
+                    await self.channel_layer.group_send(f'rider_{rider_id}', rider_event)
             else:
                 await self.send(text_data=json.dumps({
                     'type': 'error',
@@ -751,6 +781,10 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 trip.driver_id = driver
                 trip.status_id = status_obj
                 trip.accepted_at = timezone.now()
+                
+                # Generate and save OTP for the trip
+                otp = generate_otp(6)
+                trip.otp = otp
                 trip.save()
 
             # Mark driver as busy in Redis so they don't get new ride requests
@@ -774,12 +808,31 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 {"trip_id": str(trip.id), "type": "ride_accepted"}
             )
 
+            # Prepare driver and vehicle info for response
+            driver_info = {
+                'name': driver.user_id.full_name,
+                'id': driver.id,
+                'phone_number': driver.user_id.phone_number,
+                'stars': str(driver.ratings),
+            }
+            
+            vehicle = driver.active_vehicle
+            vehicle_info = {
+                'model': vehicle.model if vehicle else 'Unknown',
+                'brand': vehicle.brand if vehicle else 'Unknown',
+                'vehicle_number': vehicle.vehicle_number if vehicle else 'Unknown',
+                'color': vehicle.color if vehicle else 'Unknown',
+            }
+
             return {
                 'success': True,
                 'message': 'Trip accepted',
                 'driver_id': driver.id,
                 'driver_name': str(driver),
                 'rider_id': trip.user_id_id,
+                'otp': trip.otp,
+                'driver_info': driver_info,
+                'vehicle_info': vehicle_info,
             }
         except Trip.DoesNotExist:
             return {'success': False, 'error': 'Trip not found'}
