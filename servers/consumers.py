@@ -76,6 +76,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
         """
         try:
             data = json.loads(text_data)
+            print(data)
             lng = data.get('lng')
             lat = data.get('lat')
 
@@ -86,8 +87,8 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
                 }))
                 return
 
-            # Update location in Redis Geo
-            result = await self._update_driver_location(lng, lat)
+            # Update location in Redis Geo (using the "smart" checker)
+            result = await self._add_driver_location(lng, lat)
 
             if result.get('success'):
                 await self.send(text_data=json.dumps({
@@ -444,6 +445,15 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                 response_data['vehicle_info'] = event['vehicle_info']
 
         await self.send(text_data=json.dumps(response_data))
+
+    async def driver_location_update(self, event):
+        """Send live driver location to rider."""
+        await self.send(text_data=json.dumps({
+            'type': 'driver_location_update',
+            'lng': event['lng'],
+            'lat': event['lat'],
+            'driver_id': event['driver_id'],
+        }))
 
     # -- Database helpers --
 
