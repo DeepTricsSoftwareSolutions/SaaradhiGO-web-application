@@ -214,3 +214,19 @@ def mark_all_notifications_read(request):
     
     Notification.objects.filter(user_id=request.user, is_read=False).update(is_read=True)
     return success_response({'message': 'All notifications marked as read'}, status.HTTP_200_OK)
+
+
+# ── Wallet ────────────────────────────────────────
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_wallet_balance(request):
+    """Get current wallet balance."""
+    from .models import Wallet
+    
+    try:
+        wallet = Wallet.objects.get(user_id=request.user)
+        return success_response({'balance': str(wallet.balance)}, status.HTTP_200_OK)
+    except Wallet.DoesNotExist:
+        # Create wallet if not exists
+        wallet = Wallet.objects.create(user_id=request.user, balance=0)
+        return success_response({'balance': '0.00'}, status.HTTP_200_OK)

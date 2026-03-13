@@ -116,6 +116,25 @@ The authentication system utilizes Phone Number validation via OTP (One-Time Pas
 }
 ```
 
+#### **`GET /profile/`**: Get User Profile
+- **Description:** Retrieves the profile of the currently authenticated user.
+- **Auth Required:** Yes
+- **Success Response (200 OK):**
+```json
+{
+  "status": "success",
+  "data": {
+    "id": 1,
+    "phone_number": "+919876543210",
+    "role": "rider",
+    "full_name": "John Doe",
+    "email": "john@example.com",
+    "gender": "male",
+    "dob": "1990-01-01"
+  }
+}
+```
+
 ---
 
 ### 3.2 Rider (`/rider/`)
@@ -199,6 +218,14 @@ The authentication system utilizes Phone Number validation via OTP (One-Time Pas
 }
 ```
 
+#### **`PATCH /notifications/<id>/read/`**: Mark Notification as Read
+- **Auth Required:** Yes
+- **Success Response (200 OK):** `{ "status": "success", "data": { "message": "Marked as read" } }`
+
+#### **`POST /notifications/read-all/`**: Mark All Notifications as Read
+- **Auth Required:** Yes
+- **Success Response (200 OK):** `{ "status": "success", "data": { "message": "All notifications marked as read" } }`
+
 ---
 
 ### 3.3 Driver (`/driver/`)
@@ -213,6 +240,32 @@ The authentication system utilizes Phone Number validation via OTP (One-Time Pas
 }
 ```
 - **Success Response (200 OK):** Current driver profile info.
+
+#### **`GET /earnings/`**: Earnings List
+- **Description:** Paginated list of driver earnings.
+- **Auth Required:** Yes (Driver role)
+- **Query Params:** `?page=1&page_size=10`
+- **Success Response (200 OK):**
+```json
+{
+  "status": "success",
+  "data": {
+    "count": 10,
+    "next": "...",
+    "previous": null,
+    "results": [
+      {
+        "id": 1,
+        "trip_id": 123,
+        "amount": "150.00",
+        "commission": "15.00",
+        "net_amount": "135.00",
+        "created_at": "2024-01-01T12:00:00Z"
+      }
+    ]
+  }
+}
+```
 
 #### **`GET /earnings/summary/`**: Earnings Summary
 - **Auth Required:** Yes (Driver role)
@@ -230,6 +283,10 @@ The authentication system utilizes Phone Number validation via OTP (One-Time Pas
   }
 }
 ```
+
+#### **`GET /vehicles/`**: List Driver Vehicles
+- **Auth Required:** Yes (Driver role)
+- **Success Response (200 OK):** Array of Vehicle objects.
 
 #### **`POST /vehicles/add/`**: Add a Vehicle
 - **Auth Required:** Yes (Driver role)
@@ -258,9 +315,28 @@ The authentication system utilizes Phone Number validation via OTP (One-Time Pas
 }
 ```
 
+#### **`PATCH /vehicles/<int:vehicle_id>/`**: Update Vehicle
+- **Auth Required:** Yes (Driver role)
+- **Request Body:** (Fields optional: brand, model, color, year, capacity, vehicle_pic, vehicle_number)
+- **Success Response (200 OK):** Updated Vehicle object.
+
+#### **`DELETE /vehicles/<int:vehicle_id>/delete/`**: Delete Vehicle
+- **Auth Required:** Yes (Driver role)
+- **Success Response (200 OK):** `{ "status": "success", "data": { "message": "Vehicle deleted successfully" } }`
+
 ---
 
 ### 3.4 Ride (`/ride/`)
+
+#### **`GET /ride-history/`**: Rider Trip History
+- **Auth Required:** Yes (Rider role)
+- **Query Params:** `?page=1&status=completed`
+- **Success Response (200 OK):** Paginated list of Trip objects.
+
+#### **`GET /driver-history/`**: Driver Trip History
+- **Auth Required:** Yes (Driver role)
+- **Query Params:** `?page=1&status=completed`
+- **Success Response (200 OK):** Paginated list of Trip objects.
 
 #### **`POST /estimate-fare/`**: Calculate Preliminary Fare
 - **Description:** Calculates fare. Computes local micro-surge based on real-time rider demand vs driver supply.
@@ -382,6 +458,33 @@ The authentication system utilizes Phone Number validation via OTP (One-Time Pas
 }
 ```
 
+#### **`POST /webhook/`**: Razorpay Webhook
+- **Description:** Endpoint for Razorpay to send payment notifications (e.g., `payment.captured`).
+- **Auth Required:** No (Verified via `X-Razorpay-Signature` header)
+- **Success Response (200 OK):** `{ "status": "ok" }`
+
+#### **`GET /history/`**: Payment History
+- **Auth Required:** Yes
+- **Query Params:** `?page=1&status=completed`
+- **Success Response (200 OK):** Paginated list of payment records.
+
+#### **`POST /refund/`**: Refund Payment
+- **Description:** Initiates a refund for a cancelled trip if the payment was made online.
+- **Auth Required:** Yes
+- **Request Body:** `{ "trip_id": 1 }`
+- **Success Response (200 OK):**
+```json
+{
+  "status": "success",
+  "data": {
+    "message": "Refund initiated successfully",
+    "refund_id": "rfnd_...",
+    "amount": "260.00",
+    "trip_id": 1
+  }
+}
+```
+
 ---
 
 ## 4. WebSocket Connections (Real-Time)
@@ -389,63 +492,104 @@ The authentication system utilizes Phone Number validation via OTP (One-Time Pas
 All Real-time WebSockets operate at endpoint: `ws://<domain-or-host>:8000/ws/`
 Connections require authentication via Query Parameters: `?token=<access_token>`
 
-### 4.1 Drivers Location Tracking
-**URL:** `ws://localhost:8000/ws/driver/location/?token={{access_token}}`
-- **Action (Client -> Server):** Send current location to update geospatial bounds.
+### 4.0 Connection Handshake
+Upon successful connection, the server sends:
 ```json
 {
-  "type": "location_update",
-  "latitude": 17.385,
-  "longitude": 78.486
+  "type": "connection_established",
+  "message": "Connected successfully"
 }
 ```
-- **Server Action:** No JSON response, but internally caches location to Redis (`drivers:geo`) and maps to personal `driver_<driver_id>` channels group.
+
+**Common Error Codes (Close Codes):**
+- `4001`: Unauthorized (Missing or invalid token)
+- `4003`: Invalid Profile (e.g., user is not a driver)
+- `4004`: Driver Not Approved
+
+### 4.1 Drivers Location Tracking
+**URL:** `ws://localhost:8000/ws/driver/location/?token={{access_token}}`
+- **Action (Client -> Server):** Send current location.
+```json
+{
+  "lng": 78.486,
+  "lat": 17.385
+}
+```
+- **Server Action:** Updates geospatial bounds in Redis. If the driver is on an active trip, broadcasts to `trip_<id>` group.
 
 ### 4.2 Rider Ride Requests
 **URL:** `ws://localhost:8000/ws/ride/request/?token={{access_token}}`
-- **Action (Rider -> Server):** Initiates searching for nearby drivers to serve the request.
+- **Action (Rider -> Server):** Initiates searching for nearby drivers.
 ```json
 {
-  "type": "ride_request",
   "pickup_lat": 17.385,
   "pickup_lng": 78.486,
   "destination_lat": 17.440,
   "destination_lng": 78.348,
+  "pickup_address": "Point A",
+  "destination_address": "Point B",
   "distance_km": 15.5,
   "duration_min": 35,
   "vehicle_type": "car"
 }
 ```
+- **Retry Action (Rider -> Server):**
+```json
+{
+  "action": "retry",
+  "trip_id": 1,
+  "radius": 5000 // optional, in meters
+}
+```
+- **Server Notifications (to Rider):**
+    - `trip_created`: `{ "type": "trip_created", "trip_id": 1, ... }`
+    - `drivers_notified`: `{ "type": "drivers_notified", "trip_id": 1, "drivers_notified": 5 }`
+
 - **Server Action (Broadcast to `Driver`):**
 ```json
 {
-  "type": "ride.request",
-  "ride_details": {
-    "trip_id": 1,
-    "pickup_lat": 17.385,
-    "pickup_long": 78.486,
-    "distance": "15.50",
-    "estimated_fare": "250.00"
-  }
+  "type": "ride_request",
+  "trip_id": 1,
+  "rider_name": "John Doe",
+  "pickup_lat": "17.385",
+  "pickup_lng": "78.486",
+  "destination_lat": "17.440",
+  "destination_lng": "78.348",
+  "pickup_address": "Point A",
+  "destination_address": "Point B",
+  "estimated_fare": "250.00"
 }
 ```
 
 ### 4.3 Trip Status Updates
 **URL:** `ws://localhost:8000/ws/ride/trip/<trip_id>/?token={{access_token}}`
-- **Description:** Dedicated channel room for a single trip. Both Rider and Driver connect here once a trip is accepted.
+- **Description:** Dedicated channel for a single trip. Both Rider and Driver connect here.
 - **Action (Driver -> Server):** Update ride state
 ```json
 {
-  "action": "accept" 
-  // Other valid states: "arrive", "start", "complete", "cancel"
+  "action": "accept" // "accept", "start", "complete", "cancel"
 }
 ```
-- **Action (Server -> Client Broadcast):** Server echoes the state mutation to both rider and driver.
+- **Action (Server -> Client Broadcast):**
 ```json
 {
-  "type": "trip_update",
-  "status": "accepted", // or arriving, in_progress, completed, cancelled
-  "timestamp": "2024-01-01T12:00:00Z"
+  "type": "trip_status_update",
+  "trip_id": 1,
+  "status": "accept", // "accept", "start", "complete", "cancel"
+  "message": "Trip accepted",
+  "driver_id": 12,
+  "otp": "123456", // sent on 'accept'
+  "driver_info": { ... }, // sent on 'accept'
+  "vehicle_info": { ... } // sent on 'accept'
+}
+```
+- **Driver Location Update (Server -> Rider):**
+```json
+{
+  "type": "driver_location_update",
+  "lng": 78.486,
+  "lat": 17.385,
+  "driver_id": 12
 }
 ```
 
@@ -540,3 +684,55 @@ Admin APIs are secured and require the authenticated user to hold an `admin` rol
   - `page`: integer
   - `page_size`: integer
 - **Success Response (200 OK):** Paginated list of TransactionHistory objects.
+
+---
+
+## 5. Data Models (ER Overview)
+
+### 5.1 Auth (`customUser`)
+- `phone_number` (Unique, E.164)
+- `role` (rider, driver, admin)
+- `full_name`, `email`, `gender`, `dob`
+- `house_no`, `street`, `city`, `zip_code`
+- `fcm_token`
+
+### 5.2 Rider
+- `user_id` (OneToOne -> customUser)
+- `rating` (Decimal, default 5.0)
+- **FavoritePlace**: `user_id`, `address_text`, `latitude`, `longitude`
+- **Wallet**: `user_id`, `balance`
+- **Notification**: `user_id`, `title`, `message`, `is_read`
+
+### 5.3 Driver
+- `user_id` (OneToOne -> customUser)
+- `status` (online, off, active, on ride, blocked)
+- `ratings` (Decimal)
+- `approved` (Boolean)
+- `active_vehicle` (ForeignKey -> Vehicle)
+- **Vehicle**: `driver_id`, `vehicle_type_id`, `brand`, `model`, `vehicle_number`, `status`
+- **VehicleType**: `type`, `description`
+- **DriverEarning**: `driver_id`, `trip_id`, `commission`, `net_amount`
+
+### 5.4 Ride
+- **Trip**: 
+    - `user_id` (Rider)
+    - `driver_id` (Assigned Driver)
+    - `status_id` (ForeignKey -> TripStatus)
+    - `pickup_lat`, `pickup_long`, `destination_lat`, `destination_long`
+    - `estimated_fare`, `final_fare`
+    - `otp` (6-digit)
+- **FarePricing**: Detailed breakdown for each Trip.
+- **Rating**: `trip_id`, `rater_id` (User), `score` (1-5), `comments`.
+
+---
+
+## 6. Architecture Summary
+- **Framework**: Django 5.x with Django Rest Framework (DRF).
+- **Real-time**: Django Channels with WebSockets.
+- **Cache/Geo**: Redis used for real-time driver location indexing (`GEOADD`) and WebSocket channel layers.
+- **Database**: PostgreSQL (Primary) + Redis (Cache).
+- **Background Tasks**: Celery with Redis as broker for OTP SMS and auto-cancellation logic.
+- **External Services**: 
+    - Razorpay (Payments & Refunds)
+    - AWS SNS (Transactional SMS)
+    - OpenStreetMap (Routing & Geocoding)
