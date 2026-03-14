@@ -25,5 +25,6 @@ class Notification(models.Model):
     title=models.CharField(max_length=256)
     message=models.TextField()
     is_read=models.BooleanField(default=False)
+    created_at=models.DateTimeField(auto_now_add=True)
     def __str__(self):
         return f'{self.user_id} - {self.title}'
