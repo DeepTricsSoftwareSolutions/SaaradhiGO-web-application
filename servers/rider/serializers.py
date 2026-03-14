@@ -18,4 +18,4 @@ class FavoritePlaceSerializer(serializers.ModelSerializer):
 class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Notification
-        fields = ['id', 'title', 'message', 'is_read']
+        fields = ['id', 'title', 'message', 'is_read', 'created_at']
