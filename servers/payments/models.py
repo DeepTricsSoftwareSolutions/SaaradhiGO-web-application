@@ -43,6 +43,13 @@ class Payment(models.Model):
 
 
 class TransactionHistory(models.Model):
+    TXN_TYPE_CHOICES = [
+        ('payment', 'Payment from Rider'),
+        ('credit', 'Credit to Driver'),
+        ('debit', 'Debit from Wallet'),
+        ('refund', 'Refund to Rider'),
+    ]
+
     trip_id = models.ForeignKey('ride.Trip', on_delete=models.CASCADE, related_name='transactions')
     user_id = models.ForeignKey(User, on_delete=models.CASCADE, related_name='transactions')
     driver_id = models.ForeignKey('driver.Driver', on_delete=models.CASCADE, related_name='transactions')
@@ -52,6 +59,7 @@ class TransactionHistory(models.Model):
     user_name = models.CharField(max_length=256, blank=True, null=True)
     user_txn_id = models.CharField(max_length=256, blank=True, null=True)
     status = models.CharField(max_length=50, blank=True, null=True)
+    txn_type = models.CharField(max_length=20, choices=TXN_TYPE_CHOICES, default='payment')
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

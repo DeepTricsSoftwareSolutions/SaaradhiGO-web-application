@@ -239,6 +239,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             distance_km = data.get('distance_km')
             duration_min = data.get('duration_min')
             vehicle_type = data.get('vehicle_type')
+            payment_method = data.get('payment_method', 'cash')
 
             # Validate required fields
             if not all([pickup_lat, pickup_lng, destination_lat, destination_lng, pickup_address, destination_address]):
@@ -259,6 +260,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                 distance_km=distance_km,
                 duration_min=duration_min,
                 vehicle_type=vehicle_type,
+                payment_method=payment_method,
             )
 
             if not trip:
@@ -460,7 +462,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _create_trip(self, pickup_lat, pickup_lng, destination_lat, destination_lng,
                      pickup_address, destination_address,
-                     distance_km=None, duration_min=None, vehicle_type=None):
+                     distance_km=None, duration_min=None, vehicle_type=None, payment_method='cash'):
         from decimal import Decimal
         from servers.ride.models import Trip, FarePricing
         from servers.ride.utils import estimate_amount, validate_distance
@@ -507,6 +509,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     estimated_distance_km=Decimal(str(dist)) if dist else None,
                     surge_multiplier=fare['surge_multiplier'],
                     requested_vehicle_type=requested_vt,
+                    payment_method=payment_method,
                 )
 
                 FarePricing.objects.create(

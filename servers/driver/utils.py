@@ -48,10 +48,13 @@ def update_driver_location(driver_id, lng, lat):
     )
 
 def create_driver_earning(trip):
-    """Calculate and create DriverEarning record."""
+    """Calculate and create DriverEarning record and credit driver wallet."""
     from servers.driver.models import DriverEarning
+    from servers.payments.models import TransactionHistory
+    from servers.rider.models import Wallet
     from django.conf import settings
     from decimal import Decimal
+    from django.db import transaction
 
     if not trip.driver_id:
         return
@@ -61,14 +64,34 @@ def create_driver_earning(trip):
         return
 
     amount = trip.final_fare or trip.estimated_fare or Decimal('0.00')
-    commission_rate = getattr(settings, 'PLATFORM_COMMISSION_PERCENT', 20)
+    commission_rate = Decimal(str(getattr(settings, 'PLATFORM_COMMISSION_PERCENT', 20)))
     
-    commission = (amount * Decimal(commission_rate)) / Decimal(100)
+    commission = (amount * commission_rate) / Decimal('100')
     net_amount = amount - commission
 
-    DriverEarning.objects.create(
-        driver_id=trip.driver_id,
-        trip_id=trip,
-        commission=commission,
-        net_amount=net_amount,
-    )
+    with transaction.atomic():
+        DriverEarning.objects.create(
+            driver_id=trip.driver_id,
+            trip_id=trip,
+            commission=commission,
+            net_amount=net_amount,
+        )
+
+        # Credit the driver's wallet
+        wallet, created = Wallet.objects.get_or_create(user_id=trip.driver_id.user_id)
+        if wallet.balance is None:
+            wallet.balance = Decimal('0.00')
+        wallet.balance = Decimal(str(wallet.balance)) + net_amount
+        wallet.save()
+
+        # Create transaction history for the credit
+        TransactionHistory.objects.create(
+            trip_id=trip,
+            user_id=trip.user_id,
+            driver_id=trip.driver_id,
+            amount=net_amount,
+            method=trip.payment_method or 'online',
+            status='completed',
+            txn_type='credit',
+            user_name=trip.user_id.full_name or trip.user_id.phone_number,
+        )
