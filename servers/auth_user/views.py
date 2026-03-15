@@ -292,6 +292,8 @@ def login(request):
         
         # Generate tokens
         try:
+            user.fcm_token=device_token
+            user.save()
             access_token = AccessToken.for_user(user)
             refresh_token = RefreshToken.for_user(user)
         except Exception as e:
