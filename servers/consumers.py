@@ -586,6 +586,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
     Connect: ws://host/ws/ride/trip/<trip_id>/?token=<jwt>
     Send (driver only):
         {"action": "accept"}
+        {"action": "reached"}
         {"action": "start"}
         {"action": "complete"}
         {"action": "cancel"}
@@ -623,16 +624,17 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
     async def receive(self, text_data):
         """
         Receive trip actions from driver.
-        Expected: {"action": "accept|start|complete|cancel"}
+        Expected: {"action": "accept|reached|start|complete|cancel"}
         """
         try:
             data = json.loads(text_data)
             action = data.get('action')
+            otp_input = data.get('otp')
 
-            if action not in ('accept', 'start', 'complete', 'cancel'):
+            if action not in ('accept', 'reached', 'start', 'complete', 'cancel'):
                 await self.send(text_data=json.dumps({
                     'type': 'error',
-                    'message': 'Invalid action. Must be: accept, start, complete, or cancel'
+                    'message': 'Invalid action. Must be: accept, reached, start, complete, or cancel'
                 }))
                 return
 
@@ -647,6 +649,14 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                     }))
                     return
                 result = await self._accept_trip()
+            elif action == 'reached':
+                if not is_driver:
+                    await self.send(text_data=json.dumps({
+                        'type': 'error',
+                        'message': 'Only drivers can mark as reached'
+                    }))
+                    return
+                result = await self._update_trip_status('reached')
             elif action == 'start':
                 if not is_driver:
                     await self.send(text_data=json.dumps({
@@ -654,7 +664,13 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                         'message': 'Only drivers can start rides'
                     }))
                     return
-                result = await self._update_trip_status('in_progress')
+                if not otp_input:
+                    await self.send(text_data=json.dumps({
+                        'type': 'error',
+                        'message': 'OTP is required to start the ride'
+                    }))
+                    return
+                result = await self._update_trip_status('in_progress', otp_input=otp_input)
             elif action == 'complete':
                 if not is_driver:
                     await self.send(text_data=json.dumps({
@@ -854,7 +870,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             return {'success': False, 'error': str(e)}
 
     @database_sync_to_async
-    def _update_trip_status(self, status_code):
+    def _update_trip_status(self, status_code, otp_input=None):
         from servers.ride.models import Trip, TripStatus
         from django.utils import timezone
         from django.db import transaction
@@ -867,9 +883,10 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
                 # Define strict transition rules
                 allowed_transitions = {
-                    'in_progress': ['accepted'],
+                    'reached': ['accepted'],
+                    'in_progress': ['accepted', 'reached'],
                     'completed': ['in_progress'],
-                    'cancelled': ['accepted', 'in_progress'],
+                    'cancelled': ['accepted', 'reached', 'in_progress'],
                 }
 
                 # Enforcement of status transitions
@@ -883,6 +900,13 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 if status_code == 'cancelled' and current_status in ['completed', 'cancelled']:
                     return {'success': False, 'error': f'Trip is already {current_status}'}
 
+                if status_code == 'in_progress':
+                    if str(trip.otp) != str(otp_input):
+                        return {
+                            'success': False,
+                            'error': 'Invalid OTP provided'
+                        }
+                        
                 status_obj, _ = TripStatus.objects.get_or_create(
                     status_code=status_code,
                     defaults={'description': f'Trip {status_code}'}
@@ -891,7 +915,16 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 trip.status_id = status_obj
 
                 # Set timestamps based on status
-                if status_code == 'in_progress':
+                if status_code == 'reached':
+                    trip.reached_at = timezone.now()
+                    from servers.auth_user.services import send_push_notification
+                    send_push_notification(
+                        trip.user_id,
+                        "Driver Arrived",
+                        "Your driver has arrived at the pickup location.",
+                        {"trip_id": str(trip.id), "type": "driver_arrived"}
+                    )
+                elif status_code == 'in_progress':
                     trip.started_at = timezone.now()
                     from servers.auth_user.services import send_push_notification
                     send_push_notification(

@@ -6,7 +6,7 @@ User=get_user_model()
 # Create your models here.
 class TripStatus(models.Model):
     status_code=models.CharField(max_length=20,choices=[
-        ('accepted','Accepted'),('in_progress','In Progress'),
+        ('accepted','Accepted'),('reached','Reached'),('in_progress','In Progress'),
         ('completed','Completed'),('cancelled','Cancelled')
     ],unique=True)
     description=models.TextField(blank=True,null=True)
@@ -20,6 +20,7 @@ class Trip(models.Model):
     status_id=models.ForeignKey(TripStatus,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)
     requested_at=models.DateTimeField(auto_now_add=True)
     accepted_at=models.DateTimeField(blank=True,null=True)
+    reached_at=models.DateTimeField(blank=True,null=True)
     started_at=models.DateTimeField(blank=True,null=True)
     completed_at=models.DateTimeField(blank=True,null=True, db_index=True)
     cancelled_at=models.DateTimeField(blank=True,null=True)
