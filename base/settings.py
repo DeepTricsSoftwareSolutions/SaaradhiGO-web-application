@@ -90,7 +90,10 @@ CACHES={
     'default':{
         "BACKEND": "django_redis.cache.RedisCache",
         "LOCATION": REDIS_URL+'/1',
-        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"}
+        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "SOCKET_CONNECT_TIMEOUT": 5,
+            "SOCKET_TIMEOUT": 5
+        }
     },
     
 }
