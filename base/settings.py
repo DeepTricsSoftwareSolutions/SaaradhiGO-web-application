@@ -149,6 +149,13 @@ DATABASES = {
 }
 
 if os.environ.get('DB_HOST'):
+    db_options = {
+        'sslmode': os.environ.get('DB_SSLMODE', 'require'),
+    }
+    sslrootcert = os.environ.get('DB_SSLROOTCERT')
+    if sslrootcert:
+        db_options['sslrootcert'] = os.path.join(BASE_DIR, sslrootcert) if not os.path.isabs(sslrootcert) else sslrootcert
+
     DATABASES['default'] = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.environ.get('DB_NAME'),
@@ -156,9 +163,7 @@ if os.environ.get('DB_HOST'):
         'PASSWORD': os.environ.get('DB_PASSWORD'),
         'HOST': os.environ.get('DB_HOST'),
         'PORT': os.environ.get('DB_PORT', '5432'),
-        'OPTIONS': {
-            'sslmode': 'require',
-        }
+        'OPTIONS': db_options,
     }
 
 # Password validation
