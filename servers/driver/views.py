@@ -1,13 +1,15 @@
 import logging
+from django.core.exceptions import ValidationError
 from base.utils import success_response, error_response
 from servers.redis_client import add_driver_location,remove_driver
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework import status
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .serializers import DriverProfileSerializer
 from .utils import update_driver_location
 from .permissions import IsDriver
 from .models import Vehicle
+from base.media import EMPTY_FILE_VALUES, resolve_file_input
 logger = logging.getLogger(__name__)
 
 
@@ -239,6 +241,7 @@ def list_vehicles(request):
 
 @api_view(['POST'])
 @permission_classes([IsDriver])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
 def create_vehicle(request):
     """
     Add a new vehicle for the driver.
@@ -270,16 +273,37 @@ def create_vehicle(request):
     driver = request.user.driver
     vt = VehicleType.objects.get(type=data['vehicle_type'])
 
-    vehicle = Vehicle.objects.create(
-        driver_id=driver,
-        vehicle_type_id=vt,
-        vehicle_number=data['vehicle_number'],
-        brand=data.get('brand', ''),
-        model=data.get('model', ''),
-        color=data.get('color', ''),
-        year=data.get('year'),
-        capacity=data.get('capacity', 1),
-    )
+    try:
+        vehicle = Vehicle(
+            driver_id=driver,
+            vehicle_type_id=vt,
+            vehicle_number=data['vehicle_number'],
+            brand=data.get('brand', ''),
+            model=data.get('model', ''),
+            color=data.get('color', ''),
+            year=data.get('year'),
+            capacity=data.get('capacity', 1),
+            rc_doc=data.get('rc_doc'),
+            vehicle_pic=data.get('vehicle_pic'),
+        )
+        vehicle.full_clean()
+        vehicle.save()
+    except ValidationError as e:
+        return error_response(
+            code='VALIDATION_ERROR',
+            message='Invalid vehicle data',
+            field='vehicle',
+            issue=str(e.message_dict if hasattr(e, 'message_dict') else e.messages),
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        return error_response(
+            code='CREATE_ERROR',
+            message='Failed to create vehicle',
+            field='vehicle',
+            issue=str(e),
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
     return success_response(
         VehicleSerializer(vehicle).data,
@@ -289,6 +313,7 @@ def create_vehicle(request):
 
 @api_view(['PATCH'])
 @permission_classes([IsDriver])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
 def update_vehicle(request, vehicle_id):
     """Update a vehicle belonging to the driver."""
     from .models import Vehicle
@@ -306,11 +331,43 @@ def update_vehicle(request, vehicle_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    allowed_fields = ['brand', 'model', 'color', 'year', 'capacity', 'vehicle_pic', 'vehicle_number']
+    for field_name in ('rc_doc', 'vehicle_pic'):
+        field_provided, field_value, field_error = resolve_file_input(request, field_name)
+        if field_error:
+            return error_response(
+                code='UPLOAD_FAILED',
+                message=field_error,
+                field=field_name,
+                issue=field_error,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if field_provided:
+            setattr(vehicle, field_name, field_value)
+
+    allowed_fields = ['brand', 'model', 'color', 'year', 'capacity', 'vehicle_number']
     for field in allowed_fields:
         if field in request.data:
             setattr(vehicle, field, request.data[field])
-    vehicle.save()
+
+    try:
+        vehicle.full_clean()
+        vehicle.save()
+    except ValidationError as e:
+        return error_response(
+            code='VALIDATION_ERROR',
+            message='Invalid vehicle data',
+            field='vehicle',
+            issue=str(e.message_dict if hasattr(e, 'message_dict') else e.messages),
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        return error_response(
+            code='UPDATE_ERROR',
+            message='Failed to update vehicle',
+            field='vehicle',
+            issue=str(e),
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
     return success_response(VehicleSerializer(vehicle).data, status.HTTP_200_OK)
 
@@ -338,6 +395,7 @@ def delete_vehicle(request, vehicle_id):
 
 @api_view(['PATCH'])
 @permission_classes([IsDriver])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
 def update_driver_profile(request):
     """Update a driver profile.
     sample request: {
@@ -345,30 +403,60 @@ def update_driver_profile(request):
     }
 
     """
-
     driver = request.user.driver
-    vehicle_id= request.data.get('active_vehicle')
-    if vehicle_id:
-        try:
-            vehicle = Vehicle.objects.get(id=vehicle_id, driver_id=driver)
-            driver.active_vehicle=vehicle
-            driver.save()
-            return success_response(DriverProfileSerializer(driver).data, status.HTTP_200_OK)
-        except Vehicle.DoesNotExist:
-            return error_response(
-                code='NOT_FOUND',
-                message='Vehicle not found',
-                field='vehicle_id',
-                issue=f'Vehicle {vehicle} not found or does not belong to you',
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            return error_response(
-                code='VALIDATION_ERROR',
-                message='Invalid driver profile data',
-                field='active_vehicle',
-                issue=str(e),
-                status=status.HTTP_400_BAD_REQUEST
-            )
-    else:
-        return error_response(code='VALIDATION_ERROR',message='Invalid driver profile data',field='active_vehicle',issue='Invalid vehicle id',status=status.HTTP_400_BAD_REQUEST)
+    update_data = {}
+
+    license_provided, license_value, license_error = resolve_file_input(request, 'license_doc')
+    if license_error:
+        return error_response(
+            code='UPLOAD_FAILED',
+            message=license_error,
+            field='license_doc',
+            issue=license_error,
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    if license_provided:
+        update_data['license_doc'] = license_value
+
+    if 'license_expiry' in request.data:
+        license_expiry = request.data.get('license_expiry')
+        update_data['license_expiry'] = None if license_expiry in EMPTY_FILE_VALUES else license_expiry
+
+    if 'active_vehicle' in request.data:
+        vehicle_id = request.data.get('active_vehicle')
+        if vehicle_id in EMPTY_FILE_VALUES or vehicle_id is None:
+            update_data['active_vehicle'] = None
+        else:
+            try:
+                vehicle = Vehicle.objects.get(id=vehicle_id, driver_id=driver)
+                update_data['active_vehicle'] = vehicle.id
+            except Vehicle.DoesNotExist:
+                return error_response(
+                    code='NOT_FOUND',
+                    message='Vehicle not found',
+                    field='active_vehicle',
+                    issue=f'Vehicle {vehicle_id} not found or does not belong to you',
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+    if not update_data:
+        return error_response(
+            code='VALIDATION_ERROR',
+            message='No driver profile data provided',
+            field='data',
+            issue='Provide at least one of active_vehicle, license_doc, or license_expiry',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    serializer = DriverProfileSerializer(driver, data=update_data, partial=True)
+    if not serializer.is_valid():
+        return error_response(
+            code='VALIDATION_ERROR',
+            message='Invalid driver profile data',
+            field=list(serializer.errors.keys())[0],
+            issue=str(serializer.errors),
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    serializer.save()
+    return success_response(serializer.data, status.HTTP_200_OK)

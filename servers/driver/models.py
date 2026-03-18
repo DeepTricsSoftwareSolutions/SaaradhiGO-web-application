@@ -1,10 +1,19 @@
 from django.db import models
 from django.contrib.auth import get_user_model
+from base.media import PrefixedUUIDPath, validate_document_file, validate_file_size, validate_image_file
+from base.storage_backends import private_document_storage, public_media_storage
 # Create your models here.
 User=get_user_model()
 class Driver(models.Model):
     user_id=models.OneToOneField(User,on_delete=models.CASCADE,related_name='driver')
-    license_doc=models.CharField(max_length=512,blank=True,null=True)
+    license_doc=models.FileField(
+        blank=True,
+        max_length=512,
+        null=True,
+        storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('license_docs'),
+        validators=[validate_document_file, validate_file_size],
+    )
     license_expiry=models.DateField(blank=True,null=True)
     status=models.CharField(max_length=20,choices=[
         ('online','Online'),('off','Off'),('active','Active'),
@@ -23,7 +32,14 @@ class VehicleType(models.Model):
         return self.type
 class Vehicle(models.Model):
     driver_id=models.ForeignKey(Driver,on_delete=models.CASCADE)
-    rc_doc=models.CharField(max_length=512,blank=True,null=True)
+    rc_doc=models.FileField(
+        blank=True,
+        max_length=512,
+        null=True,
+        storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('rc_docs'),
+        validators=[validate_document_file, validate_file_size],
+    )
     vehicle_type_id=models.ForeignKey(VehicleType,on_delete=models.CASCADE,related_name='vehicles')
     brand=models.CharField(max_length=100,blank=True,null=True)
     model=models.CharField(max_length=100,blank=True,null=True)
@@ -31,7 +47,14 @@ class Vehicle(models.Model):
     year=models.IntegerField(blank=True,null=True)
     vehicle_number=models.CharField(max_length=20)
     capacity=models.IntegerField(default=1)
-    vehicle_pic=models.CharField(max_length=512,blank=True,null=True)
+    vehicle_pic=models.FileField(
+        blank=True,
+        max_length=512,
+        null=True,
+        storage=public_media_storage,
+        upload_to=PrefixedUUIDPath('vehicle_pics'),
+        validators=[validate_image_file, validate_file_size],
+    )
     status=models.CharField(max_length=20,choices=[
         ('active','Active'),('inactive','Inactive'),
         ('under_maintenance','Under Maintenance')

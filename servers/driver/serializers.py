@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import Vehicle, VehicleType, DriverEarning, Driver
 from servers.auth_user.serializers import UserModelSerializer
+from base.serializer_fields import NullableFileField
 
 
 class VehicleTypeSerializer(serializers.ModelSerializer):
@@ -8,9 +9,11 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
         model = VehicleType
         fields = ['id', 'type', 'description']
 class DriverProfileSerializer(serializers.ModelSerializer):
+    license_doc = NullableFileField(required=False, allow_null=True)
+
     class Meta:
         model = Driver
-        fields = "__all__"
+        fields = ['license_doc', 'license_expiry', 'active_vehicle']
 
 class VehicleSerializer(serializers.ModelSerializer):
     vehicle_type = VehicleTypeSerializer(source='vehicle_type_id', read_only=True)
@@ -36,6 +39,8 @@ class VehicleCreateSerializer(serializers.Serializer):
     color = serializers.CharField(max_length=50, required=False, default='')
     year = serializers.IntegerField(required=False, default=None)
     capacity = serializers.IntegerField(required=False, default=1)
+    rc_doc = NullableFileField(required=False, allow_null=True)
+    vehicle_pic = NullableFileField(required=False, allow_null=True)
 
     def validate_vehicle_type(self, value):
         try:

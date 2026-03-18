@@ -10,7 +10,7 @@ load_dotenv()
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-*5(=ti+p9y=gyu0zkoojz$b55meinl-5w*ibm)3mpkm2ybiohh'
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
 REDIS_URL=os.environ.get('REDIS_URL','redis://redis:6379')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
@@ -43,11 +43,13 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     'channels',
+    'storages',
     'servers.auth_user',
     'servers.rider',
     'servers.driver',
     'servers.ride',
     'servers.payments',
+    'django_cleanup.apps.CleanupConfig',
     # 'servers.support',
     
 ]
@@ -113,6 +115,17 @@ AWS_SECRET_ACCESS_KEY=os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_ACCESS_KEY_ID=os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_REGION=os.environ.get("AWS_REGION")
 AWS_SNS_SENDER_ID=os.environ.get("AWS_SNS_SENDER_ID")
+
+# AWS S3
+AWS_S3_BUCKET_NAME=os.environ.get("AWS_S3_BUCKET_NAME", "")
+AWS_S3_REGION=os.environ.get("AWS_S3_REGION", AWS_REGION)
+AWS_STORAGE_BUCKET_NAME=AWS_S3_BUCKET_NAME
+AWS_S3_REGION_NAME=AWS_S3_REGION
+AWS_DEFAULT_ACL=None
+AWS_QUERYSTRING_EXPIRE=int(os.environ.get("AWS_PRIVATE_MEDIA_URL_EXPIRE_SECONDS", "900"))
+AWS_S3_FILE_OVERWRITE=False
+AWS_S3_SIGNATURE_VERSION="s3v4"
+AWS_S3_ADDRESSING_STYLE="virtual"
 
 # Razorpay
 RAZORPAY_KEY_ID=os.environ.get("RAZORPAY_KEY_ID", "")
