@@ -24,6 +24,5 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
             cd /home/ubuntu/VahanGO-web-application
             git pull origin dev
-            docker-compose down
-            docker-compose up -d --build
+            docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
           EOF
