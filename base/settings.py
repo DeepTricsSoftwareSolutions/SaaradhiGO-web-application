@@ -16,18 +16,9 @@ REDIS_URL=os.environ.get('REDIS_URL','redis://redis:6379')
 DEBUG_ENV=os.environ.get('DEBUG_ENV','False')
 DEBUG = DEBUG_ENV=='True'
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS').split(',')
 
-CSRF_TRUSTED_ORIGINS = [
-    'https://*.onrender.com',
-]
-render_url = os.environ.get('RENDER_EXTERNAL_URL')
-if render_url:
-    CSRF_TRUSTED_ORIGINS.append(render_url)
-    
-csrf_origins = os.environ.get('CSRF_TRUSTED_ORIGINS')
-if csrf_origins:
-    CSRF_TRUSTED_ORIGINS.extend(csrf_origins.split(','))
+CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS').split(',')
 
 
 # Application definition
