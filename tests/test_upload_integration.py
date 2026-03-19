@@ -40,7 +40,7 @@ class TrackingStorage(Storage):
 
 @pytest.fixture(autouse=True)
 def storage_fields(monkeypatch):
-    public_storage = TrackingStorage("https://public-media.test")
+    public_storage = TrackingStorage("https://public-media.test", signed=True)
     private_storage = TrackingStorage("https://private-media.test", signed=True)
 
     storage_map = {
@@ -77,7 +77,8 @@ def test_update_user_avatar_upload_replaces_old_file(auth_client_rider, storage_
     assert user.full_name == "Avatar User"
     assert user.avatar.name.startswith("avatars/")
     assert user.avatar.name != "avatars/old.png"
-    assert response.data["data"]["avatar"] == f"https://public-media.test/{user.avatar.name}"
+    assert response.data["data"]["avatar"].startswith(f"https://public-media.test/{user.avatar.name}")
+    assert response.data["data"]["avatar"].endswith("?signature=fake")
     assert "avatars/old.png" in storage_fields["public"].deleted
 
 
@@ -104,7 +105,8 @@ def test_create_vehicle_uploads_files_via_django_storage(auth_client_driver):
     assert vehicle.vehicle_pic.name.startswith("vehicle_pics/")
     assert response.data["data"]["rc_doc"].startswith("https://private-media.test/rc_docs/")
     assert response.data["data"]["rc_doc"].endswith("?signature=fake")
-    assert response.data["data"]["vehicle_pic"] == f"https://public-media.test/{vehicle.vehicle_pic.name}"
+    assert response.data["data"]["vehicle_pic"].startswith(f"https://public-media.test/{vehicle.vehicle_pic.name}")
+    assert response.data["data"]["vehicle_pic"].endswith("?signature=fake")
 
 
 @pytest.mark.django_db

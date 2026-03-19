@@ -13,7 +13,8 @@ load_dotenv()
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
 REDIS_URL=os.environ.get('REDIS_URL','redis://redis:6379')
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG_ENV=os.environ.get('DEBUG_ENV','False')
+DEBUG = DEBUG_ENV=='True'
 
 ALLOWED_HOSTS = ['*']
 
