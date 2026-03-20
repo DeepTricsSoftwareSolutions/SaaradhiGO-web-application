@@ -1,5 +1,5 @@
 name: Deploy to EC2
-
+# print
 on:
   push:
     branches:
