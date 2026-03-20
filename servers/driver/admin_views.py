@@ -4,8 +4,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from base.utils import success_response, error_response
 from servers.auth_user.permissions import IsAdmin
-from servers.driver.models import Driver
-from servers.driver.serializers import DriverAdminListSerializer, DriverAdminDetailSerializer, KYCApprovalSerializer
+from servers.driver.models import Driver,Vehicle
+from servers.driver.serializers import DriverAdminListSerializer, DriverAdminDetailSerializer, KYCApprovalSerializer, VehicleSerializer
 from rest_framework.pagination import PageNumberPagination
 
 logger = logging.getLogger(__name__)
@@ -104,5 +104,23 @@ def delete_driver_admin(request, driver_id):
             message="Driver not found",
             field="driver_id",
             issue=f"No driver matches id {driver_id}",
+            status=status.HTTP_404_NOT_FOUND
+        )
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsAdmin])
+def get_vehicle_details(request, driver_id):
+    """
+    Get details of a vehicle by its ID.
+    """
+    try:
+        vehicle_objects = Vehicle.objects.filter(driver_id=driver_id)
+        serializer = VehicleSerializer(vehicle_objects, many=True)
+        return success_response(serializer.data, status.HTTP_200_OK)
+    except Vehicle.DoesNotExist:
+        return error_response(
+            code="NOT_FOUND",
+            message="Vehicle not found",
+            field="vehicle_id",
+            issue=f"No vehicle matches id {vehicle_id}",
             status=status.HTTP_404_NOT_FOUND
         )

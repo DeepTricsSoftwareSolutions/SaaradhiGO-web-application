@@ -3,12 +3,15 @@ services:
     build:
       context: .
       dockerfile: dockerfile
-    
+    volumes:
+      - .:/App
 
   celery:
     build:
       context: .
       dockerfile: dockerfile
     command: ["celery", "-A", "base", "worker", "-l", "INFO"]
+    volumes:
+      - .:/App
     depends_on:
       - django

@@ -8,12 +8,6 @@ class VehicleTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = VehicleType
         fields = ['id', 'type', 'description']
-class DriverProfileSerializer(serializers.ModelSerializer):
-    license_doc = NullableFileField(required=False, allow_null=True)
-
-    class Meta:
-        model = Driver
-        fields = ['license_doc', 'license_expiry', 'active_vehicle']
 
 class VehicleSerializer(serializers.ModelSerializer):
     vehicle_type = VehicleTypeSerializer(source='vehicle_type_id', read_only=True)
@@ -29,6 +23,13 @@ class VehicleSerializer(serializers.ModelSerializer):
             'vehicle_type', 'vehicle_type_id_val',
         ]
         read_only_fields = ['id', 'status']
+class DriverProfileSerializer(serializers.ModelSerializer):
+    license_doc = NullableFileField(required=False, allow_null=True)
+    active_vehicle_details = VehicleSerializer(source='active_vehicle', read_only=True)
+
+    class Meta:
+        model = Driver
+        fields = ['id', 'license_doc', 'license_expiry', 'active_vehicle_details', 'status', 'approved', 'total_trips', 'ratings']
 
 
 class VehicleCreateSerializer(serializers.Serializer):

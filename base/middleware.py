@@ -13,4 +13,14 @@ class ExceptionHandlingMiddleware:
     def process_exception(self, request, exception):
         logger.error(f"Unhandled exception: {exception}", exc_info=True)
 
-        return JsonResponse({'error': f'An unexpected error occurred.{exception}'}, status=404)
+        return JsonResponse({
+            "status": "error",
+            "error": {
+                "code": "UNKNOWN_ERROR",
+                "message": f"{exception}",
+                "details": {
+                    "field": "general",
+                    "issue": "No details available"
+                }
+            }
+        }, status=404)

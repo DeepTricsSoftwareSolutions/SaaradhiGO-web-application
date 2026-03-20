@@ -397,11 +397,11 @@ def delete_vehicle(request, vehicle_id):
 @permission_classes([IsDriver])
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 def update_driver_profile(request):
-    """Update a driver profile.
-    sample request: {
-        "active_vehicle": int
-    }
-
+    """
+    Get or update a driver profile.
+    
+    GET: Returns current profile data.
+    PATCH: Updates profile data (e.g. active_vehicle, license_doc).
     """
     driver = request.user.driver
     update_data = {}
@@ -459,4 +459,11 @@ def update_driver_profile(request):
         )
 
     serializer.save()
+    return success_response(serializer.data, status.HTTP_200_OK)
+@api_view(['GET'])
+@permission_classes([IsDriver])
+def get_driver_profile(request):
+    """Get a driver profile."""
+    driver = request.user.driver
+    serializer = DriverProfileSerializer(driver)
     return success_response(serializer.data, status.HTTP_200_OK)
