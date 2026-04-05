@@ -521,6 +521,20 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     total_fare=fare['total_fare'],
                 )
 
+            # Cache new trip in Redis for fast state reads
+            from servers.redis_client import cache_trip as _cache_trip
+            _cache_trip(
+                trip.id,
+                status='requested',
+                rider_id=str(self.user.id),
+                pickup_lat=str(pickup_lat),
+                pickup_lng=str(pickup_lng),
+                destination_lat=str(destination_lat),
+                destination_lng=str(destination_lng),
+                estimated_fare=str(fare['total_fare']),
+                payment_method=payment_method or 'cash',
+            )
+
             # Schedule auto-cancel task
             from servers.ride.tasks import auto_cancel_trip
             from django.conf import settings
@@ -821,6 +835,14 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             set_driver_active_trip(driver.id, trip.id)
             remove_driver(driver.id)  # Remove from nearby drivers pool
 
+            # Update ride cache with accepted status and driver assignment
+            from servers.redis_client import cache_trip as _cache_trip
+            _cache_trip(
+                trip.id,
+                status='accepted',
+                driver_id=str(driver.id),
+            )
+
             # Create notification for rider
             from servers.rider.models import Notification
             Notification.objects.create(
@@ -973,10 +995,15 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
                 trip.save()
 
-                # If trip has ended, restore driver's available status
+                # If trip has ended, restore driver's available status + invalidate cache
                 if status_code in ('completed', 'cancelled') and trip.driver_id:
-                    from servers.redis_client import clear_driver_active_trip
+                    from servers.redis_client import clear_driver_active_trip, invalidate_trip
                     clear_driver_active_trip(trip.driver_id.id)
+                    invalidate_trip(trip.id)
+                else:
+                    # For intermediate states, update cache with new status
+                    from servers.redis_client import cache_trip as _cache_trip
+                    _cache_trip(trip.id, status=status_code)
 
                 result = {
                     'success': True,

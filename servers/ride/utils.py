@@ -2,7 +2,8 @@ import math
 import logging
 from decimal import Decimal
 from django.utils import timezone
-
+from .models import Trip
+from .serializers import TripDetailSerializer
 logger = logging.getLogger(__name__)
 
 import requests
@@ -252,3 +253,21 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=Non
         'vehicle_type': vehicle_type or 'default',
         'source': source,
     }
+
+def get_trip_details(trip_id):
+    obj=Trip.objects.filter(id=trip_id).values(
+        'id',
+        'rider_id',
+        'driver_id',
+        'pickup_lat',
+        'pickup_long',
+        'destination_lat',
+        'destination_lng',
+        'pickup_address',
+        'destination_address',
+        'estimated_fare',
+        'status',
+    ).first()
+    if not obj:
+        return None
+    return TripDetailSerializer(obj).data

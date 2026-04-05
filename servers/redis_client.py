@@ -3,6 +3,7 @@ import logging
 from django.conf import settings
 from servers.driver.utils import update_driver_location
 from servers.driver.models import Driver
+from servers.ride.utils import get_trip_details
 logger = logging.getLogger(__name__)
 
 # Initialize Redis client with connection pool and error handling
@@ -23,6 +24,8 @@ except (redis.ConnectionError, redis.TimeoutError, Exception) as e:
 
 GEO_KEY = 'drivers:geo'
 ACTIVE_TRIP_PREFIX = 'driver:active_trip:'
+RIDE_CACHE_PREFIX = 'ride:'
+RIDE_CACHE_TTL_SECONDS = 86400  # 24 hours safety net for orphaned trips
 
 
 def set_driver_active_trip(driver_id, trip_id):
@@ -68,6 +71,111 @@ def clear_driver_active_trip(driver_id):
     except Exception as e:
         logger.error(f"Failed to clear active trip for driver {driver_id}: {str(e)}")
         return False
+
+
+def cache_trip(trip_id, **fields):
+    """
+    Cache active trip state as a Redis Hash.
+
+    Args:
+        trip_id: The trip's database ID
+        **fields: Key-value pairs to store. Common fields:
+            status (str): Trip status (e.g., 'requested', 'accepted', 'in_progress')
+            rider_id (str): Rider's user ID
+            driver_id (str): Driver's profile ID (optional until accepted)
+            pickup_lat (str): Pickup latitude
+            pickup_lng (str): Pickup longitude
+            destination_lat (str): Destination latitude
+            destination_lng (str): Destination longitude
+            estimated_fare (str): String-serialized Decimal fare
+            payment_method (str): Payment method (cash/online)
+
+    Returns:
+        bool: True on success, False on failure
+    """
+    if redis_client is None:
+        logger.error("Redis client not available for cache_trip")
+        return False
+    try:
+        key = f"{RIDE_CACHE_PREFIX}{trip_id}"
+        # Convert all values to strings for Redis compatibility
+        string_fields = {k: str(v) for k, v in fields.items() if v is not None}
+        if not string_fields:
+            return False
+        redis_client.hset(key, mapping=string_fields)
+        redis_client.expire(key, RIDE_CACHE_TTL_SECONDS)
+        logger.info(f"Trip {trip_id} cached with fields: {list(string_fields.keys())}")
+        return True
+    except redis.RedisError as e:
+        logger.error(f"Redis error caching trip {trip_id}: {str(e)}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error caching trip {trip_id}: {str(e)}")
+        return False
+
+
+def get_cached_trip(trip_id):
+    """
+    Retrieve cached trip state from Redis.
+
+    Args:
+        trip_id: The trip's database ID
+
+    Returns:
+        dict: All cached fields as strings, or None if not found or on error
+    """
+    if redis_client is None:
+        logger.error("Redis client not available for get_cached_trip")
+        return None
+    try:
+        key = f"{RIDE_CACHE_PREFIX}{trip_id}"
+        data = redis_client.hgetall(key)
+        if not data:
+            logger.debug(f"Trip {trip_id} not found in cache")
+            data = get_trip_details(trip_id)
+            if data:
+                cache_trip(trip_id, **data)
+            else:
+                logger.error(f"Trip {trip_id} not found in database")
+                return {}
+        return data
+    except redis.RedisError as e:
+        logger.error(f"Redis error fetching cached trip {trip_id}: {str(e)}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error fetching cached trip {trip_id}: {str(e)}")
+        return None
+
+
+def invalidate_trip(trip_id):
+    """
+    Remove a trip from the cache. Call this when a trip is completed or cancelled.
+
+    Args:
+        trip_id: The trip's database ID
+
+    Returns:
+        bool: True if key existed and was deleted, False otherwise
+    """
+    if redis_client is None:
+        logger.error("Redis client not available for invalidate_trip")
+        return False
+    try:
+        key = f"{RIDE_CACHE_PREFIX}{trip_id}"
+        deleted = redis_client.delete(key)
+        if deleted:
+            logger.info(f"Trip {trip_id} invalidated from cache")
+            return True
+        else:
+            logger.debug(f"Trip {trip_id} was not in cache (already expired or never cached)")
+            return False
+    except redis.RedisError as e:
+        logger.error(f"Redis error invalidating trip {trip_id}: {str(e)}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error invalidating trip {trip_id}: {str(e)}")
+        return False
+
 def _validate_coordinates(lng, lat):
     """
     Validate geographic coordinates.

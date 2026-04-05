@@ -376,7 +376,46 @@ def trip_detail(request, trip_id):
     """
     Get detailed info for a single trip, including fare breakdown and ratings.
     Only the rider or assigned driver can view.
+    Checks Redis cache first for active trips before querying PostgreSQL.
     """
+    from servers.redis_client import get_cached_trip
+
+    # --- Cache-ahead read for active trips ---
+    cached = get_cached_trip(trip_id)
+    if cached:
+        # Verify the requesting user is the rider or driver from cache
+        cached_rider_id = cached.get('rider_id')
+        cached_driver_id = cached.get('driver_id')
+        is_rider = str(request.user.id) == str(cached_rider_id)
+        is_driver = (
+            cached_driver_id and
+            hasattr(request.user, 'driver') and
+            str(request.user.driver.id) == str(cached_driver_id)
+        )
+        if not is_rider and not is_driver:
+            return error_response(
+                code='FORBIDDEN',
+                message='You do not have access to this trip',
+                field='trip_id',
+                issue='Only the rider or assigned driver can view this trip',
+                status=status.HTTP_403_FORBIDDEN
+            )
+        # Return lightweight cached response
+        return success_response({
+            'trip_id': trip_id,
+            'status': cached.get('status'),
+            'rider_id': cached.get('rider_id'),
+            'driver_id': cached.get('driver_id'),
+            'pickup_lat': cached.get('pickup_lat'),
+            'pickup_lng': cached.get('pickup_lng'),
+            'destination_lat': cached.get('destination_lat'),
+            'destination_lng': cached.get('destination_lng'),
+            'estimated_fare': cached.get('estimated_fare'),
+            'payment_method': cached.get('payment_method'),
+            'source': 'cache',
+        }, status.HTTP_200_OK)
+
+    # --- Cache miss: fall back to full DB query ---
     try:
         trip = Trip.objects.select_related(
             'status_id', 'driver_id', 'driver_id__user_id',
