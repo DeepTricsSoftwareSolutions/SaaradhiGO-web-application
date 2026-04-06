@@ -451,6 +451,26 @@ def trip_detail(request, trip_id):
     serializer = TripDetailSerializer(trip)
     return success_response(serializer.data, status.HTTP_200_OK)
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def trip_driver_details(request,trip_id):
+    try:
+        trip = Trip.objects.select_related(
+            'status_id', 'driver_id', 'driver_id__user_id',
+            'vehicle_id', 'vehicle_id__vehicle_type_id'
+        ).prefetch_related(
+            'fare_pricing', 'ratings', 'ratings__rater_id'
+        ).get(id=trip_id)
+    except Trip.DoesNotExist:
+        return error_response(
+            code='NOT_FOUND',
+            message='Trip not found',
+            field='trip_id',
+            issue=f'No trip with id {trip_id}',
+            status=status.HTTP_404_NOT_FOUND
+        )
+    serializer = TripDetailSerializer(trip)
+    return success_response(serializer.data, status.HTTP_200_OK)
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])

@@ -534,6 +534,83 @@ The authentication system utilizes Phone Number validation via OTP (One-Time Pas
 }
 ```
 
+#### **`POST /trip/<id>/details/`**: Get Trip Driver Details
+- **Description:** Returns full trip details including driver info, vehicle info, fare breakdown, and ratings for a given trip. Unlike the `GET /trip/<id>/` endpoint, this does **not** check Redis cache and always queries the database. No access-control check is performed beyond authentication.
+- **Auth Required:** Yes
+- **URL Params:** `id` — Integer trip ID.
+- **Request Body:** None (empty POST).
+- **Sample Request:**
+```
+POST /api/v1/ride/trip/105/details/
+Authorization: Bearer <access_token>
+```
+- **Success Response (200 OK):**
+```json
+{
+  "status": "success",
+  "data": {
+    "id": 105,
+    "pickup_address": "Ameerpet Metro Station",
+    "destination_address": "Hitech City",
+    "pickup_lat": "17.4375",
+    "pickup_long": "78.4483",
+    "destination_lat": "17.4435",
+    "destination_long": "78.3772",
+    "estimated_fare": "220.00",
+    "final_fare": "220.00",
+    "surge_multiplier": "1.00",
+    "estimated_distance_km": "12.30",
+    "actual_distance_km": "12.50",
+    "payment_method": "online",
+    "payment_status": "completed",
+    "status": "completed",
+    "driver_name": "Driver Ravi",
+    "vehicle_info": {
+      "vehicle_number": "TS09AB1234",
+      "brand": "Maruti",
+      "model": "Ciaz",
+      "color": "White",
+      "type": "sedan"
+    },
+    "requested_at": "2024-03-19T08:00:00Z",
+    "completed_at": "2024-03-19T08:45:00Z",
+    "cancelled_at": null,
+    "accepted_at": "2024-03-19T08:02:00Z",
+    "started_at": "2024-03-19T08:10:00Z",
+    "fare_breakdown": {
+      "base_fare": "40.00",
+      "distance_fare": "130.00",
+      "time_fare": "50.00",
+      "surge_multiplier": "1.00",
+      "total_fare": "220.00"
+    },
+    "ratings": [
+      {
+        "id": 1,
+        "rater_id": 7,
+        "rater_name": "John Doe",
+        "score": 5,
+        "comments": "Great ride!",
+        "created_at": "2024-03-19T09:00:00Z"
+      }
+    ]
+  }
+}
+```
+- **Error Responses:**
+  - **404 Not Found** — Trip ID does not exist:
+  ```json
+  {
+    "status": "error",
+    "error": {
+      "code": "NOT_FOUND",
+      "message": "Trip not found",
+      "field": "trip_id",
+      "issue": "No trip with id 999"
+    }
+  }
+  ```
+
 #### **`POST /rate-trip/`**: Rate Completed Trip
 - **Request Parameters (JSON):**
 ```json

@@ -25,8 +25,9 @@ def save_favorite_locations(request):
     }
     """
     try:
+        request.data['latitude']=request.data['latitude'][:12]
+        request.data['longitude']=request.data['longitude'][:12]
         instance = FavoritePlaceSerializer(data=request.data)
-
         if instance.is_valid():
             instance.save(user_id=request.user)
             return success_response(
