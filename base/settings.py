@@ -16,11 +16,11 @@ REDIS_URL=os.environ.get('REDIS_URL','redis://redis:6379')
 DEBUG_ENV=os.environ.get('DEBUG_ENV','False')
 DEBUG = DEBUG_ENV=='True'
 
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS').split(',')
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
 if DEBUG_ENV=='True':
     CSRF_ALLOW_ALL_ORIGINS = True
 else:
-    CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS').split(',')
+    CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', '*').split(',')
 
 
 # Application definition
