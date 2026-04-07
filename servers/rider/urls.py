@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     save_favorite_locations, get_favorite_locations, get_nearby_drivers,
     list_notifications, mark_notification_read, mark_all_notifications_read,
-    get_wallet_balance,delete_favorite_location
+    get_wallet_balance,delete_favorite_location,update_wallet_balance
 )
 
 urlpatterns=[
@@ -16,4 +16,5 @@ urlpatterns=[
     path('notifications/read-all/', mark_all_notifications_read),
     # Wallet
     path('wallet/balance/', get_wallet_balance),
+    path('wallet/update/', update_wallet_balance),
 ]

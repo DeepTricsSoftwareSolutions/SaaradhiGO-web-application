@@ -837,10 +837,18 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
             # Update ride cache with accepted status and driver assignment
             from servers.redis_client import cache_trip as _cache_trip
+            vehicle = driver.active_vehicle
             _cache_trip(
                 trip.id,
                 status='accepted',
                 driver_id=str(driver.id),
+                driver_name=driver.user_id.full_name,
+                driver_phone=driver.user_id.phone_number,
+                driver_rating=str(driver.ratings),
+                vehicle_model=vehicle.model if vehicle else 'Unknown',
+                vehicle_brand=vehicle.brand if vehicle else 'Unknown',
+                vehicle_number=vehicle.vehicle_number if vehicle else 'Unknown',
+                vehicle_color=vehicle.color if vehicle else 'Unknown'
             )
 
             # Create notification for rider
@@ -886,6 +894,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 'vehicle_info': vehicle_info,
             }
         except Trip.DoesNotExist:
+            
             return {'success': False, 'error': 'Trip not found'}
         except Exception as e:
             logger.error(f"Error accepting trip: {str(e)}")

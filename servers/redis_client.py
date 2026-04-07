@@ -82,7 +82,7 @@ def cache_trip(trip_id, **fields):
         **fields: Key-value pairs to store. Common fields:
             status (str): Trip status (e.g., 'requested', 'accepted', 'in_progress')
             rider_id (str): Rider's user ID
-            driver_id (str): Driver's profile ID (optional until accepted)
+            driver (dict): Driver's profile (optional until accepted)
             pickup_lat (str): Pickup latitude
             pickup_lng (str): Pickup longitude
             destination_lat (str): Destination latitude

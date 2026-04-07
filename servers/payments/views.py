@@ -94,6 +94,7 @@ def create_order(request):
 
     # Create Razorpay order
     order = create_razorpay_order(amount=amount, trip_id=trip.id)
+    logger.info(f"Razorpay order created: {order}")
     if not order:
         return error_response(
             code='PAYMENT_GATEWAY_ERROR',
@@ -114,6 +115,7 @@ def create_order(request):
             'razorpay_order_id': order['id'],
         }
     )
+    logger.info(f"Payment created: {payment}")
 
     return success_response({
         'payment_id': payment.id,

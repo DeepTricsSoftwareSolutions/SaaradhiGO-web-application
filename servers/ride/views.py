@@ -451,9 +451,31 @@ def trip_detail(request, trip_id):
     serializer = TripDetailSerializer(trip)
     return success_response(serializer.data, status.HTTP_200_OK)
 
-@api_view(['POST'])
+@api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def trip_driver_details(request,trip_id):
+    from servers.redis_client import get_cached_trip
+    
+    # Check cache first for rapid response
+    cached = get_cached_trip(trip_id)
+    if cached and 'driver_name' in cached:
+        # Build response formatted similarly to TripDetailSerializer plus extra phone/rating
+        return success_response({
+            'id': trip_id,
+            'status': cached.get('status'),
+            'driver_name': cached.get('driver_name'),
+            'driver_phone': cached.get('driver_phone'),
+            'driver_rating': cached.get('driver_rating'),
+            'vehicle_info': {
+                'vehicle_number': cached.get('vehicle_number'),
+                'brand': cached.get('vehicle_brand'),
+                'model': cached.get('vehicle_model'),
+                'color': cached.get('vehicle_color')
+            },
+            'source': 'cache'
+        }, status.HTTP_200_OK)
+
+    # Fall back to DB query
     try:
         trip = Trip.objects.select_related(
             'status_id', 'driver_id', 'driver_id__user_id',
@@ -470,7 +492,15 @@ def trip_driver_details(request,trip_id):
             status=status.HTTP_404_NOT_FOUND
         )
     serializer = TripDetailSerializer(trip)
-    return success_response(serializer.data, status.HTTP_200_OK)
+    
+    # Attach driver phone/rating to the response manually since serializer might not
+    data = serializer.data
+    if trip.driver_id:
+        data['driver_phone'] = trip.driver_id.user_id.phone_number
+        data['driver_rating'] = str(trip.driver_id.ratings)
+    data['source'] = 'database'
+        
+    return success_response(data, status.HTTP_200_OK)
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])

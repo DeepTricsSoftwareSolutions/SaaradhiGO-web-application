@@ -280,3 +280,23 @@ def get_wallet_balance(request):
         # Create wallet if not exists
         wallet = Wallet.objects.create(user_id=request.user, balance=0)
         return success_response({'balance': '0.00'}, status.HTTP_200_OK)
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def update_wallet_balance(request):
+    """Update wallet balance."""
+    from .models import Wallet
+    
+    try:
+        wallet = Wallet.objects.get(user_id=request.user)
+        wallet.balance = request.data.get('balance')
+        wallet.save()
+        return success_response({'balance': str(wallet.balance)}, status.HTTP_200_OK)
+    except Wallet.DoesNotExist:
+        return error_response(
+            code='NOT_FOUND',
+            message='Wallet not found',
+            field='wallet',
+            issue='Wallet not found',
+            status=status.HTTP_404_NOT_FOUND
+        )
