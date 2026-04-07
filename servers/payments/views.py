@@ -263,12 +263,33 @@ def razorpay_webhook(request):
             if not rzp_order_id:
                 return JsonResponse({'status': 'skipped', 'reason': 'no order_id'}, status=200)
 
+            # Check if it's a Wallet Transaction
+            from servers.rider.models import WalletTransaction, Wallet
+            wallet_txn = WalletTransaction.objects.filter(razorpay_order_id=rzp_order_id).first()
+            
+            if wallet_txn:
+                if wallet_txn.status == 'completed':
+                    return JsonResponse({'status': 'already_completed'}, status=200)
+                
+                with transaction.atomic():
+                    wallet_txn.status = 'completed'
+                    wallet_txn.razorpay_payment_id = rzp_payment_id
+                    wallet_txn.save()
+
+                    wallet, _ = Wallet.objects.get_or_create(user_id=wallet_txn.user_id)
+                    wallet.balance = float(wallet.balance) + float(wallet_txn.amount)
+                    wallet.save()
+                    
+                logger.info(f"Webhook: Wallet Top-up {wallet_txn.id} completed for user {wallet_txn.user_id.id}")
+                return JsonResponse({'status': 'ok'}, status=200)
+
+            # Check if it's a Trip Payment
             try:
                 payment = Payment.objects.select_related('trip_id', 'trip_id__driver_id').get(
                     razorpay_order_id=rzp_order_id
                 )
             except Payment.DoesNotExist:
-                logger.warning(f"Webhook: No payment found for order {rzp_order_id}")
+                logger.warning(f"Webhook: No payment/wallet matching order {rzp_order_id}")
                 return JsonResponse({'status': 'skipped', 'reason': 'payment not found'}, status=200)
 
             if payment.status == 'completed':

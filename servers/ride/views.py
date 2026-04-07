@@ -458,8 +458,7 @@ def trip_driver_details(request,trip_id):
     
     # Check cache first for rapid response
     cached = get_cached_trip(trip_id)
-    if cached and 'driver_name' in cached:
-        # Build response formatted similarly to TripDetailSerializer plus extra phone/rating
+    if cached and 'driver_id' in cached:
         return success_response({
             'id': trip_id,
             'status': cached.get('status'),
@@ -480,8 +479,6 @@ def trip_driver_details(request,trip_id):
         trip = Trip.objects.select_related(
             'status_id', 'driver_id', 'driver_id__user_id',
             'vehicle_id', 'vehicle_id__vehicle_type_id'
-        ).prefetch_related(
-            'fare_pricing', 'ratings', 'ratings__rater_id'
         ).get(id=trip_id)
     except Trip.DoesNotExist:
         return error_response(
@@ -491,14 +488,25 @@ def trip_driver_details(request,trip_id):
             issue=f'No trip with id {trip_id}',
             status=status.HTTP_404_NOT_FOUND
         )
-    serializer = TripDetailSerializer(trip)
-    
-    # Attach driver phone/rating to the response manually since serializer might not
-    data = serializer.data
-    if trip.driver_id:
-        data['driver_phone'] = trip.driver_id.user_id.phone_number
-        data['driver_rating'] = str(trip.driver_id.ratings)
-    data['source'] = 'database'
+
+    data = {
+        'id': trip.id,
+        'status': trip.status_id.status_code if trip.status_id else 'pending',
+        'driver_name': str(trip.driver_id) if trip.driver_id else None,
+        'driver_phone': trip.driver_id.user_id.phone_number if trip.driver_id and trip.driver_id.user_id else None,
+        'driver_rating': str(trip.driver_id.ratings) if trip.driver_id else None,
+        'vehicle_info': None,
+        'source': 'database'
+    }
+
+    if trip.vehicle_id:
+        v = trip.vehicle_id
+        data['vehicle_info'] = {
+            'vehicle_number': v.vehicle_number,
+            'brand': v.brand,
+            'model': v.model,
+            'color': v.color
+        }
         
     return success_response(data, status.HTTP_200_OK)
 

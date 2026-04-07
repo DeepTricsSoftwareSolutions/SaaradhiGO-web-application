@@ -368,25 +368,72 @@ Uses Redis to fetch active online drivers within the radius.
 }
 ```
 
-### 2.9 Update Wallet Balance
-- **URL**: `/rider/wallet/update/`
+### 2.9 Create Wallet Order
+Initiates a Razorpay order for adding money to the wallet.
+- **URL**: `/rider/wallet/create-order/`
 - **Method**: `POST`
 - **Auth Required**: Yes
 
 **Parameters**:
 | Name | Type | Required | Description |
 | ---- | ---- | -------- | ----------- |
-| `balance` | string | **Yes** | New balance sum. |
+| `amount` | string | **Yes** | Amount to add. |
 
 **Sample Request**:
 ```json
-{ "balance": "500.00" }
+{ "amount": "500.00" }
+```
+**Sample Response (201 Created)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "transaction_id": 1,
+    "razorpay_order_id": "order_Fxy...",
+    "amount": "500.00",
+    "amount_paise": 50000,
+    "currency": "INR",
+    "description": "Wallet Top-up",
+    "prefill": {
+        "name": "Raja Kumar",
+        "contact": "+919876543210",
+        "email": "raja@example.com"
+    }
+  }
+}
+```
+
+### 2.10 Verify Wallet Payment
+Secures the transaction and augments the wallet balance upon success.
+- **URL**: `/rider/wallet/verify/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+**Parameters**:
+| Name | Type | Required | Description |
+| ---- | ---- | -------- | ----------- |
+| `razorpay_order_id`| string | **Yes** | From 2.9 |
+| `razorpay_payment_id`| string | **Yes** | Issued by Razorpay. |
+| `razorpay_signature` | string | **Yes** | Generated hash signature. |
+
+**Sample Request**:
+```json
+{
+  "razorpay_order_id": "order_Fxy...",
+  "razorpay_payment_id": "pay_Fxy...",
+  "razorpay_signature": "fa17de..."
+}
 ```
 **Sample Response (200 OK)**:
 ```json
 {
   "status": "success",
-  "data": { "balance": "500.00" }
+  "data": {
+    "message": "Payment verified successfully",
+    "transaction_id": 1,
+    "status": "completed",
+    "new_balance": "850.00"
+  }
 }
 ```
 
@@ -698,13 +745,13 @@ Checks Redis cache explicitly for active real-time trips.
 }
 ```
 
-### 4.5 Trip Driver Details via POST
+### 4.5 Trip Driver Details via GET
 Fetches full driver details for the trip. Evaluates the Redis cache first for extreme performance, then gracefully falls back to the Django DB.
 - **URL**: `/ride/trip/<trip_id>/details/`
-- **Method**: `POST`
+- **Method**: `GET`
 - **Auth Required**: Yes
 
-**Sample Request**: `POST /ride/trip/101/details/` (No Body)
+**Sample Request**: `GET /ride/trip/101/details/` (No Body)
 **Sample Response (200 OK)**:
 ```json
 {

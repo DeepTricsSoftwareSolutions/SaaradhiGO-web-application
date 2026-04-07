@@ -281,22 +281,182 @@ def get_wallet_balance(request):
         wallet = Wallet.objects.create(user_id=request.user, balance=0)
         return success_response({'balance': '0.00'}, status.HTTP_200_OK)
 
-@api_view(["POST"])
+@api_view(['POST'])
 @permission_classes([IsAuthenticated])
-def update_wallet_balance(request):
-    """Update wallet balance."""
-    from .models import Wallet
+def create_wallet_order(request):
+    """
+    Create a Razorpay order for a wallet top-up.
     
+    Expected: { "amount": "500.00" }
+    """
+    from .models import WalletTransaction
+    from servers.payments.razorpay_utils import create_razorpay_order
+    
+    amount = request.data.get('amount')
+    if not amount:
+        return error_response(
+            code='MISSING_FIELDS',
+            message='amount is required',
+            field='amount',
+            issue='Provide the amount to add to wallet',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
     try:
-        wallet = Wallet.objects.get(user_id=request.user)
-        wallet.balance = request.data.get('balance')
-        wallet.save()
-        return success_response({'balance': str(wallet.balance)}, status.HTTP_200_OK)
-    except Wallet.DoesNotExist:
+        amount_val = float(amount)
+        if amount_val <= 0:
+            raise ValueError("Amount must be positive")
+    except ValueError:
+        return error_response(
+            code='INVALID_AMOUNT',
+            message='Invalid amount provided',
+            field='amount',
+            issue='Amount must be a positive number',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Create Razorpay order
+    # Passing currency='INR', receipt='wallet_topup_{user_id}' but receipt limit is 40 chars
+    # Wait, create_razorpay_order in razorpay_utils uses:
+    # order_data = {'amount': amount_paise, 'currency': currency, 'receipt': f'trip_{trip_id}'}
+    # It hardcodes 'trip_id'. So we should modify razorpay_utils.py or override here.
+    # We can use the existing razorpay SDK directly here if we don't want to modify razorpay_utils.py.
+    # Actually, modifying razorpay_utils.py create_razorpay_order to accept receipt is better.
+    # For now, I will use get_razorpay_client from razorpay_utils.
+    from servers.payments.razorpay_utils import get_razorpay_client
+    client = get_razorpay_client()
+    if not client:
+        return error_response(
+            code='PAYMENT_GATEWAY_ERROR',
+            message='Payment gateway not configured',
+            field='razorpay',
+            issue='Client init failed',
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+    try:
+        amount_paise = int(amount_val * 100)
+        order_data = {
+            'amount': amount_paise,
+            'currency': 'INR',
+            'receipt': f'wallet_{request.user.id}',
+            'payment_capture': 1,
+        }
+        order = client.order.create(data=order_data)
+        logger.info(f"Razorpay wallet order created for user {request.user.id}: {order['id']}")
+        
+        # Create WalletTransaction
+        txn = WalletTransaction.objects.create(
+            user_id=request.user,
+            amount=amount_val,
+            txn_type='credit',
+            status='pending',
+            razorpay_order_id=order['id']
+        )
+        
+        return success_response({
+            'transaction_id': txn.id,
+            'razorpay_order_id': order['id'],
+            'amount': str(amount_val),
+            'amount_paise': order['amount'],
+            'currency': order['currency'],
+            'description': 'Wallet Top-up',
+            'prefill': {
+                'name': request.user.full_name or '',
+                'contact': request.user.phone_number or '',
+                'email': request.user.email or '',
+            }
+        }, status.HTTP_201_CREATED)
+    except Exception as e:
+        logger.error(f"Failed to create wallet order: {e}")
+        return error_response(
+            code='PAYMENT_GATEWAY_ERROR',
+            message='Failed to create payment order. Please try again.',
+            field='razorpay',
+            issue=str(e),
+            status=status.HTTP_502_BAD_GATEWAY
+        )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def verify_wallet_payment(request):
+    """
+    Verify a wallet top-up payment.
+    
+    Expected: {
+        "razorpay_order_id": str,
+        "razorpay_payment_id": str,
+        "razorpay_signature": str
+    }
+    """
+    from .models import WalletTransaction, Wallet
+    from servers.payments.razorpay_utils import verify_payment_signature
+    from django.db import transaction
+
+    order_id = request.data.get('razorpay_order_id')
+    payment_id = request.data.get('razorpay_payment_id')
+    signature = request.data.get('razorpay_signature')
+
+    if not all([order_id, payment_id, signature]):
+        return error_response(
+            code='MISSING_FIELDS',
+            message='razorpay_order_id, razorpay_payment_id, and razorpay_signature are required',
+            field='request_body',
+            issue='Missing signature fields',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        txn = WalletTransaction.objects.get(
+            razorpay_order_id=order_id,
+            user_id=request.user
+        )
+    except WalletTransaction.DoesNotExist:
         return error_response(
             code='NOT_FOUND',
-            message='Wallet not found',
-            field='wallet',
-            issue='Wallet not found',
+            message='Transaction not found',
+            field='razorpay_order_id',
+            issue='No transaction matches this order',
             status=status.HTTP_404_NOT_FOUND
         )
+
+    if txn.status == 'completed':
+        return success_response({
+            'message': 'Payment already verified',
+            'transaction_id': txn.id,
+            'status': 'completed',
+        }, status.HTTP_200_OK)
+
+    # Verify signature
+    is_valid = verify_payment_signature(order_id, payment_id, signature)
+    if not is_valid:
+        txn.status = 'failed'
+        txn.razorpay_payment_id = payment_id
+        txn.save()
+        return error_response(
+            code='SIGNATURE_INVALID',
+            message='Payment verification failed',
+            field='razorpay_signature',
+            issue='Signature check failed',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Apply to wallet
+    with transaction.atomic():
+        txn.status = 'completed'
+        txn.razorpay_payment_id = payment_id
+        txn.razorpay_signature = signature
+        txn.save()
+
+        wallet, _ = Wallet.objects.get_or_create(user_id=request.user)
+        wallet.balance = float(wallet.balance) + float(txn.amount) # Add money
+        wallet.save()
+
+    logger.info(f"Wallet Top-up verified for user {request.user.id}: added {txn.amount}")
+    return success_response({
+        'message': 'Payment verified successfully',
+        'transaction_id': txn.id,
+        'status': 'completed',
+        'new_balance': str(wallet.balance)
+    }, status.HTTP_200_OK)
