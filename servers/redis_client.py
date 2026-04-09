@@ -89,7 +89,7 @@ def cache_trip(trip_id, **fields):
             destination_lng (str): Destination longitude
             estimated_fare (str): String-serialized Decimal fare
             payment_method (str): Payment method (cash/online)
-
+            otp (str): Otp for the trip
     Returns:
         bool: True on success, False on failure
     """

@@ -1,5 +1,6 @@
 import json
 import logging
+from django.conf import settings
 from decimal import Decimal
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
@@ -120,7 +121,7 @@ def create_order(request):
     return success_response({
         'payment_id': payment.id,
         'razorpay_order_id': order['id'],
-        'razorpay_key_id': order.get('key_id', ''),
+        'razorpay_key_id': getattr(settings, 'RAZORPAY_KEY_ID', ''),
         'amount': str(amount),
         'amount_paise': order['amount'],
         'currency': order['currency'],

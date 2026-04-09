@@ -848,7 +848,8 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 vehicle_model=vehicle.model if vehicle else 'Unknown',
                 vehicle_brand=vehicle.brand if vehicle else 'Unknown',
                 vehicle_number=vehicle.vehicle_number if vehicle else 'Unknown',
-                vehicle_color=vehicle.color if vehicle else 'Unknown'
+                vehicle_color=vehicle.color if vehicle else 'Unknown',
+                otp=otp,
             )
 
             # Create notification for rider

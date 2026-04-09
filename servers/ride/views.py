@@ -471,6 +471,7 @@ def trip_driver_details(request,trip_id):
                 'model': cached.get('vehicle_model'),
                 'color': cached.get('vehicle_color')
             },
+            'otp': cached.get('otp'),
             'source': 'cache'
         }, status.HTTP_200_OK)
 
