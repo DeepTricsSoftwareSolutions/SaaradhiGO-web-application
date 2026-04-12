@@ -460,3 +460,19 @@ def verify_wallet_payment(request):
         'status': 'completed',
         'new_balance': str(wallet.balance)
     }, status.HTTP_200_OK)
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_wallet_transactions(request):
+    """Get wallet transactions for the user."""
+    from .models import WalletTransaction
+    from .serializers import WalletTransactionSerializer
+    from rest_framework.pagination import PageNumberPagination
+    
+    transactions = WalletTransaction.objects.filter(user_id=request.user).order_by('-id')
+    
+    paginator = PageNumberPagination()
+    paginator.page_size = 20
+    result_page = paginator.paginate_queryset(transactions, request)
+    serializer = WalletTransactionSerializer(result_page, many=True)
+    return success_response(serializer.data,status.HTTP_200_OK)

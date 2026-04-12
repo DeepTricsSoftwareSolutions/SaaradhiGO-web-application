@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     save_favorite_locations, get_favorite_locations, get_nearby_drivers,
     list_notifications, mark_notification_read, mark_all_notifications_read,
-    get_wallet_balance, delete_favorite_location, create_wallet_order, verify_wallet_payment
+    get_wallet_balance, delete_favorite_location, create_wallet_order, verify_wallet_payment, get_wallet_transactions
 )
 
 urlpatterns=[
@@ -18,4 +18,5 @@ urlpatterns=[
     path('wallet/balance/', get_wallet_balance),
     path('wallet/create-order/', create_wallet_order),
     path('wallet/verify/', verify_wallet_payment),
-]
+    path('wallet/transactions/', get_wallet_transactions),
+]

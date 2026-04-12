@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import FavoritePlace, Rider, Notification
+from .models import FavoritePlace, Rider, Notification, WalletTransaction
 
 
 class RiderSerializer(serializers.ModelSerializer):
@@ -19,3 +19,7 @@ class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Notification
         fields = ['id', 'title', 'message', 'is_read', 'created_at']
+class WalletTransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WalletTransaction
+        fields = ['id', 'user_id', 'amount', 'txn_type', 'status', 'razorpay_order_id', 'razorpay_payment_id', 'razorpay_signature', 'created_at']
