@@ -437,6 +437,36 @@ Secures the transaction and augments the wallet balance upon success.
 }
 ```
 
+### 2.11 Get Wallet Transactions
+Get all wallet transactions for the authenticated user.
+- **URL**: `/rider/wallet/transactions/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+- Supports Pagination (`page`, `page_size`).
+
+**Sample Request**: `GET /rider/wallet/transactions/`
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "count": 5,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "id": 1,
+        "amount": "500.00",
+        "txn_type": "credit",
+        "status": "completed",
+        "razorpay_order_id": "order_Fxy...",
+        "created_at": "2026-04-07T10:00:00Z"
+      }
+    ]
+  }
+}
+```
+
 ---
 
 ## 3. Driver Functions (App: `driver`)
