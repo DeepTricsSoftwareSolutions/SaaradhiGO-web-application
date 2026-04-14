@@ -476,3 +476,127 @@ def get_wallet_transactions(request):
     result_page = paginator.paginate_queryset(transactions, request)
     serializer = WalletTransactionSerializer(result_page, many=True)
     return success_response(serializer.data,status.HTTP_200_OK)
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def wallet_payment(request):
+    """
+    Initiate a direct payment from wallet without Razorpay.
+    
+    Expected: {
+        "amount": "100.00",
+        "purpose": "Trip payment",
+        "reference_id": "TRIP_123",
+        "idempotency_key": "unique-key-123"
+    }
+    """
+    from .models import WalletTransaction, Wallet
+    from django.db import transaction
+    import uuid
+    
+    amount = request.data.get('amount')
+    purpose = request.data.get('purpose', 'Payment')
+    reference_id = request.data.get('reference_id')
+    idempotency_key = request.data.get('idempotency_key')
+    
+    # Validate required fields
+    if not amount:
+        return error_response(
+            code='MISSING_FIELDS',
+            message='amount is required',
+            field='amount',
+            issue='Provide the amount to pay from wallet',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Generate idempotency key if not provided
+    if not idempotency_key:
+        idempotency_key = str(uuid.uuid4())
+    
+    try:
+        amount_val = float(amount)
+        if amount_val <= 0:
+            raise ValueError("Amount must be positive")
+    except ValueError:
+        return error_response(
+            code='INVALID_AMOUNT',
+            message='Invalid amount provided',
+            field='amount',
+            issue='Amount must be a positive number',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Check for duplicate idempotency key
+    existing_txn = WalletTransaction.objects.filter(
+        idempotency_key=idempotency_key
+    ).first()
+    
+    if existing_txn:
+        return success_response({
+            'message': 'Duplicate request detected - using existing transaction',
+            'transaction_id': existing_txn.id,
+            'status': existing_txn.status,
+            'amount': str(existing_txn.amount)
+        }, status.HTTP_200_OK)
+    
+    try:
+        with transaction.atomic():
+            # Lock wallet row for update
+            wallet = Wallet.objects.select_for_update().get(user_id=request.user)
+            
+            # Check balance with lock
+            if float(wallet.balance) < amount_val:
+                return error_response(
+                    code='INSUFFICIENT_BALANCE',
+                    message='Insufficient wallet balance',
+                    field='wallet',
+                    issue='Wallet balance is less than the amount to pay',
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Deduct amount from wallet
+            wallet.balance = float(wallet.balance) - amount_val
+            wallet.save()
+            
+            # Create direct debit transaction
+            txn = WalletTransaction.objects.create(
+                user_id=request.user,
+                amount=amount_val,
+                txn_type='debit',
+                status='completed',
+                purpose=purpose,
+                reference_id=reference_id,
+                idempotency_key=idempotency_key
+            )
+            
+            logger.info(f"Direct wallet payment successful for user {request.user.id}: "
+                        f"Deducted {amount_val}, new balance: {wallet.balance}")
+            
+            return success_response({
+                'transaction_id': txn.id,
+                'amount': str(amount_val),
+                'new_balance': str(wallet.balance),
+                'purpose': purpose,
+                'reference_id': reference_id,
+                'idempotency_key': idempotency_key,
+                'message': 'Payment successful'
+            }, status.HTTP_201_CREATED)
+            
+    except Wallet.DoesNotExist:
+        return error_response(
+            code='WALLET_NOT_FOUND',
+            message='Wallet not found',
+            field='wallet',
+            issue='User wallet does not exist',
+            status=status.HTTP_404_NOT_FOUND
+        )
+    
+    except Exception as e:
+        logger.error(f"Direct wallet payment failed: {str(e)}")
+        return error_response(
+            code='PAYMENT_FAILED',
+            message='Payment failed',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

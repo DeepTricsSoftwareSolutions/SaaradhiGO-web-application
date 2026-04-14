@@ -467,6 +467,45 @@ Get all wallet transactions for the authenticated user.
 }
 ```
 
+### 2.12 Direct Wallet Payment
+Initiate a direct payment from wallet without Razorpay. Used for internal payments like trip payments.
+- **URL**: `/rider/wallet/payment/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+**Parameters**:
+| Name | Type | Required | Description |
+| ---- | ---- | -------- | ----------- |
+| `amount` | string | **Yes** | Amount to pay |
+| `purpose` | string | No | Purpose of payment (default: "Payment") |
+| `reference_id` | string | No | Reference ID for the payment (e.g., trip ID) |
+| `idempotency_key` | string | No | Unique key to prevent duplicate payments |
+
+**Sample Request**:
+```json
+{
+  "amount": "100.00",
+  "purpose": "Trip payment",
+  "reference_id": "TRIP_123",
+  "idempotency_key": "unique-key-123"
+}
+```
+**Sample Response (201 Created)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "transaction_id": 123,
+    "amount": "100.00",
+    "new_balance": "250.00",
+    "purpose": "Trip payment",
+    "reference_id": "TRIP_123",
+    "idempotency_key": "unique-key-123",
+    "message": "Payment successful"
+  }
+}
+```
+
 ---
 
 ## 3. Driver Functions (App: `driver`)
