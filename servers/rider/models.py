@@ -25,13 +25,17 @@ class WalletTransaction(models.Model):
     user_id = models.ForeignKey(User, on_delete=models.CASCADE, related_name='wallet_transactions')
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     txn_type = models.CharField(max_length=20, choices=[
-        ('credit', 'Credit'),  # Added via Razorpay
-        ('debit', 'Debit')     # Used for both Razorpay and direct payments
+        ('credit', 'Credit'),  # Added via payment gateway
+        ('debit', 'Debit')     # Used for both gateway and direct payments
     ])
     status = models.CharField(max_length=20, choices=[('pending', 'Pending'), ('completed', 'Completed'), ('failed', 'Failed')], default='pending')
-    razorpay_order_id = models.CharField(max_length=256, blank=True, null=True, db_index=True)
-    razorpay_payment_id = models.CharField(max_length=256, blank=True, null=True, db_index=True)
-    razorpay_signature = models.CharField(max_length=512, blank=True, null=True)
+    # Generic gateway fields
+    gateway_order_id = models.CharField(max_length=256, blank=True, null=True, db_index=True)
+    gateway_payment_id = models.CharField(max_length=256, blank=True, null=True, db_index=True)
+    gateway_signature = models.CharField(max_length=512, blank=True, null=True)
+    payment_gateway = models.CharField(max_length=50, default='cashfree', choices=[
+        ('cashfree', 'Cashfree'),
+    ])
     created_at = models.DateTimeField(auto_now_add=True)
     # New fields for direct payments
     purpose = models.CharField(max_length=100, blank=True, null=True)

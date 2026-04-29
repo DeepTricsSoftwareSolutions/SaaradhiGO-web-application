@@ -160,27 +160,43 @@ logger = logging.getLogger(__name__)
 @permission_classes([IsDriver])
 def driver_earnings(request):
     """
-    Paginated list of driver earnings.
+    Paginated list of driver transactions (earnings).
 
     Query params:
         ?page=1         - Page number
         ?page_size=10   - Items per page (max 50)
     """
-    from .models import DriverEarning
-    from .serializers import DriverEarningSerializer
+    from servers.payments.models import TransactionHistory
     from rest_framework.pagination import PageNumberPagination
 
     driver = request.user.driver
-    earnings = DriverEarning.objects.filter(driver_id=driver).select_related('trip_id').order_by('-id')
+    # Get credit transactions (earnings) for the driver
+    transactions = TransactionHistory.objects.filter(
+        driver_id=driver,
+        txn_type='credit'
+    ).select_related('trip_id', 'user_id').order_by('-created_at')
 
     paginator = PageNumberPagination()
     paginator.page_size = 10
     paginator.page_size_query_param = 'page_size'
     paginator.max_page_size = 50
-    page = paginator.paginate_queryset(earnings, request)
-    serializer = DriverEarningSerializer(page, many=True)
-    logger.info(f"Driver earnings: {serializer.data}")
-    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
+    page = paginator.paginate_queryset(transactions, request)
+    
+    # Format response similar to old earnings format
+    data = []
+    for txn in page:
+        data.append({
+            'id': txn.id,
+            'trip_id_val': txn.trip_id.id if txn.trip_id else None,
+            'commission': 0.0,  # Commission not tracked in TransactionHistory
+            'net_amount': float(txn.amount),
+            'created_at': txn.created_at.isoformat() if txn.created_at else None,
+            'method': txn.method,
+            'user_name': txn.user_name,
+        })
+    
+    logger.info(f"Driver transactions: {len(data)} records")
+    return success_response(paginator.get_paginated_response(data).data, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -191,37 +207,204 @@ def driver_earnings_summary(request):
 
     Returns: total_earned, total_commission, total_trips, today_earned, today_trips
     """
-    from .models import DriverEarning
+    from servers.payments.models import TransactionHistory
+    from servers.rider.models import Wallet
     from django.db.models import Sum, Count
     from django.utils import timezone
 
     driver = request.user.driver
     today = timezone.now().date()
 
-    total = DriverEarning.objects.filter(driver_id=driver).aggregate(
-        total_earned=Sum('net_amount'),
-        total_commission=Sum('commission'),
+    # Get total earnings from TransactionHistory (credits only)
+    total = TransactionHistory.objects.filter(
+        driver_id=driver,
+        txn_type='credit'
+    ).aggregate(
+        total_earned=Sum('amount'),
         total_trips=Count('id'),
     )
 
-    today_qs = DriverEarning.objects.filter(
+    # Get today's earnings
+    today_qs = TransactionHistory.objects.filter(
         driver_id=driver,
-        trip_id__completed_at__date=today,
+        txn_type='credit',
+        created_at__date=today,
     ).aggregate(
-        today_earned=Sum('net_amount'),
+        today_earned=Sum('amount'),
         today_trips=Count('id'),
     )
+
+    # Calculate commission (20% of total earnings)
+    total_earned = float(total['total_earned'] or 0)
+    commission_percent = 20  # 20% platform fee
+    total_commission = total_earned * (commission_percent / 100)
+
+    # Get wallet balance
+    try:
+        wallet = Wallet.objects.get(user_id=driver.user_id)
+        wallet_balance = float(wallet.balance) if wallet.balance else 0.0
+    except Wallet.DoesNotExist:
+        wallet_balance = 0.0
 
     from django.conf import settings
 
     return success_response({
-        'total_earned': str(total['total_earned'] or 0),
-        'total_commission': str(total['total_commission'] or 0),
+        'total_earned': str(total_earned),
+        'total_commission': str(total_commission),
         'total_trips': total['total_trips'] or 0,
         'today_earned': str(today_qs['today_earned'] or 0),
         'today_trips': today_qs['today_trips'] or 0,
-        'commission_percent': settings.PLATFORM_COMMISSION_PERCENT,
+        'commission_percent': commission_percent,
+        'wallet_balance': str(wallet_balance),
     }, status.HTTP_200_OK)
+
+
+# ── Driver Withdrawals ──────────────────────────────────
+
+@api_view(['GET'])
+@permission_classes([IsDriver])
+def driver_withdrawal_balance(request):
+    """
+    GET /api/driver/withdrawals/balance/
+    Returns available balance, block status, fee percentage.
+    """
+    from .services import calculate_available_balance, is_withdrawal_blocked, calculate_platform_fee, get_withdrawal_block_remaining
+    from django.utils import timezone
+
+    driver = request.user.driver
+    available = calculate_available_balance(driver)
+    blocked = is_withdrawal_blocked(driver)
+    block_remaining = get_withdrawal_block_remaining(driver)
+    fee_percent = 2.0  # 2% platform fee
+
+    response_data = {
+        'available_balance': float(available),
+        'blocked': blocked,
+        'block_remaining_seconds': block_remaining.total_seconds() if block_remaining else None,
+        'fee_percent': fee_percent,
+        'minimum_withdrawal': 500.0,
+    }
+    return success_response(response_data, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsDriver])
+def driver_withdrawal_request(request):
+    """
+    POST /api/driver/withdrawals/request/
+    Creates withdrawal request after validation.
+    """
+    from .services import (
+        calculate_available_balance,
+        validate_withdrawal_amount,
+        is_withdrawal_blocked,
+        calculate_platform_fee,
+    )
+    from .models import WithdrawalRequest
+    from .serializers import WithdrawalRequestCreateSerializer
+    from django.utils import timezone
+
+    driver = request.user.driver
+
+    # Validate block period
+    if is_withdrawal_blocked(driver):
+        from .services import get_withdrawal_block_remaining, format_block_remaining
+        remaining = get_withdrawal_block_remaining(driver)
+        formatted = format_block_remaining(remaining)
+        return error_response(
+            code='WITHDRAWAL_BLOCKED',
+            message='You cannot withdraw within 7 days of your last withdrawal',
+            field='withdrawal',
+            issue=f'Block period ends in {formatted}',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    serializer = WithdrawalRequestCreateSerializer(data=request.data)
+    if not serializer.is_valid():
+        return error_response(
+            code='VALIDATION_ERROR',
+            message='Invalid withdrawal data',
+            field=list(serializer.errors.keys())[0],
+            issue=str(serializer.errors),
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    amount = serializer.validated_data['amount']
+
+    # Validate amount against balance
+    is_valid, error_msg = validate_withdrawal_amount(driver, amount)
+    if not is_valid:
+        return error_response(
+            code='INSUFFICIENT_BALANCE',
+            message=error_msg,
+            field='amount',
+            issue=error_msg,
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    print(serializer.validated_data)
+    # Create withdrawal request
+    withdrawal = WithdrawalRequest.objects.create(
+        driver=driver,
+        amount=amount,
+        status='pending'
+    )
+
+    # Return created withdrawal
+    from .serializers import WithdrawalRequestSerializer
+    withdrawal_serializer = WithdrawalRequestSerializer(withdrawal)
+    return success_response(withdrawal_serializer.data, status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsDriver])
+def driver_withdrawal_history(request):
+    """
+    GET /api/driver/withdrawals/history/
+    Lists driver's withdrawal requests with status.
+    """
+    from .models import WithdrawalRequest
+    from .serializers import WithdrawalRequestSerializer
+    from rest_framework.pagination import PageNumberPagination
+
+    driver = request.user.driver
+    withdrawals = WithdrawalRequest.objects.filter(driver=driver).order_by('-requested_at')
+
+    paginator = PageNumberPagination()
+    paginator.page_size = 10
+    paginator.page_size_query_param = 'page_size'
+    paginator.max_page_size = 50
+    page = paginator.paginate_queryset(withdrawals, request)
+    serializer = WithdrawalRequestSerializer(page, many=True)
+    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsDriver])
+def driver_withdrawal_block_status(request):
+    """
+    GET /api/driver/withdrawals/block-status/
+    Returns block end time and countdown.
+    """
+    from .services import is_withdrawal_blocked, get_withdrawal_block_remaining, get_block_end_time, format_block_remaining
+    from django.utils import timezone
+    from datetime import timedelta
+
+    driver = request.user.driver
+    blocked = is_withdrawal_blocked(driver)
+    remaining = get_withdrawal_block_remaining(driver)
+    last_withdrawal = driver.last_withdrawal_at
+    block_end = get_block_end_time(driver)
+    formatted_remaining = format_block_remaining(remaining)
+
+    response_data = {
+        'blocked': blocked,
+        'last_withdrawal_at': last_withdrawal.isoformat() if last_withdrawal else None,
+        'block_end_at': block_end.isoformat() if block_end else None,
+        'remaining_seconds': remaining.total_seconds() if remaining else None,
+        'remaining_human': formatted_remaining,
+        'can_withdraw': not blocked,
+    }
+    return success_response(response_data, status.HTTP_200_OK)
 
 
 # ── Vehicle CRUD ────────────────────────────────────────

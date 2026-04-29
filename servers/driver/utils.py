@@ -47,9 +47,8 @@ def update_driver_location(driver_id, lng, lat):
         status_code=status.HTTP_200_OK
     )
 
-def create_driver_earning(trip):
-    """Calculate and create DriverEarning record and credit driver wallet."""
-    from servers.driver.models import DriverEarning
+def credit_driver_wallet(trip):
+    """Credit driver's wallet with earnings from completed trip."""
     from servers.payments.models import TransactionHistory
     from servers.rider.models import Wallet
     from django.conf import settings
@@ -59,10 +58,6 @@ def create_driver_earning(trip):
     if not trip.driver_id:
         return
 
-    # Skip if already exists
-    if DriverEarning.objects.filter(trip_id=trip).exists():
-        return
-
     amount = trip.final_fare or trip.estimated_fare or Decimal('0.00')
     commission_rate = Decimal(str(getattr(settings, 'PLATFORM_COMMISSION_PERCENT', 20)))
     
@@ -70,13 +65,6 @@ def create_driver_earning(trip):
     net_amount = amount - commission
 
     with transaction.atomic():
-        DriverEarning.objects.create(
-            driver_id=trip.driver_id,
-            trip_id=trip,
-            commission=commission,
-            net_amount=net_amount,
-        )
-
         # Credit the driver's wallet
         wallet, created = Wallet.objects.get_or_create(user_id=trip.driver_id.user_id)
         if wallet.balance is None:
@@ -94,4 +82,4 @@ def create_driver_earning(trip):
             status='completed',
             txn_type='credit',
             user_name=trip.user_id.full_name or trip.user_id.phone_number,
-        )
+        )

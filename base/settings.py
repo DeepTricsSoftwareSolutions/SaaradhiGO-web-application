@@ -20,7 +20,11 @@ ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
 if DEBUG_ENV=='True':
     CSRF_ALLOW_ALL_ORIGINS = True
 else:
-    CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', '*').split(',')
+    csrf_trusted_origins = os.environ.get('CSRF_TRUSTED_ORIGINS', '')
+    if csrf_trusted_origins:
+        CSRF_TRUSTED_ORIGINS = csrf_trusted_origins.split(',')
+    else:
+        CSRF_TRUSTED_ORIGINS = []
 
 
 # Application definition
@@ -128,6 +132,17 @@ AWS_S3_ADDRESSING_STYLE="virtual"
 RAZORPAY_KEY_ID=os.environ.get("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET=os.environ.get("RAZORPAY_KEY_SECRET", "")
 RAZORPAY_WEBHOOK_SECRET=os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
+
+# Cashfree
+CASHFREE_APP_ID=os.environ.get("CASHFREE_APP_ID", "")
+CASHFREE_SECRET_KEY=os.environ.get("CASHFREE_SECRET_KEY", "")
+CASHFREE_WEBHOOK_SECRET=os.environ.get("CASHFREE_WEBHOOK_SECRET", "")
+CASHFREE_API_VERSION=os.environ.get("CASHFREE_API_VERSION", "2023-08-01")
+CASHFREE_ENVIRONMENT=os.environ.get("CASHFREE_ENVIRONMENT", "sandbox")  # sandbox or production
+
+# Payment Gateway Selection
+PAYMENT_GATEWAY=os.environ.get("PAYMENT_GATEWAY", "cashfree")
+PAYOUT_GATEWAY=os.environ.get("PAYOUT_GATEWAY", "cashfree")
 
 # Platform Settings
 PLATFORM_COMMISSION_PERCENT=float(os.environ.get("PLATFORM_COMMISSION_PERCENT", "0"))

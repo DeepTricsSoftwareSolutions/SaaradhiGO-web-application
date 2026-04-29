@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Vehicle, VehicleType, DriverEarning, Driver
+from .models import Vehicle, VehicleType, Driver, WithdrawalRequest
 from servers.auth_user.serializers import UserModelSerializer
 from base.serializer_fields import NullableFileField
 
@@ -54,13 +54,6 @@ class VehicleCreateSerializer(serializers.Serializer):
         return value
 
 
-class DriverEarningSerializer(serializers.ModelSerializer):
-    trip_id_val = serializers.IntegerField(source='trip_id.id', read_only=True)
-
-    class Meta:
-        model = DriverEarning
-        fields = ['id', 'trip_id_val', 'commission', 'net_amount']
-
 # --- Admin Serializers ---
 
 class DriverAdminListSerializer(serializers.ModelSerializer):
@@ -82,3 +75,19 @@ class DriverAdminDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Driver
         fields = ['id', 'user_details', 'license_doc', 'license_expiry', 'status', 'total_trips', 'ratings', 'approved', 'vehicles', 'active_vehicle']
+
+
+class WithdrawalRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WithdrawalRequest
+        fields = ['id', 'driver', 'amount', 'status', 'requested_at', 'processed_at', 'admin_notes', 'payout_reference_id']
+        read_only_fields = ['id', 'driver', 'status', 'requested_at', 'processed_at', 'admin_notes', 'payout_reference_id']
+
+
+class WithdrawalRequestCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WithdrawalRequest
+        fields = ['amount']
+        extra_kwargs = {
+            'amount': {'required': True, 'min_value': 500}
+        }

@@ -7,7 +7,7 @@ User=get_user_model()
 class TripStatus(models.Model):
     status_code=models.CharField(max_length=20,choices=[
         ('accepted','Accepted'),('reached','Reached'),('in_progress','In Progress'),
-        ('completed','Completed'),('cancelled','Cancelled')
+        ('completed','Completed'),('cancelled','Cancelled'),('requested','Requested')
     ],unique=True)
     description=models.TextField(blank=True,null=True)
     def __str__(self):
@@ -17,7 +17,7 @@ class Trip(models.Model):
     driver_id=models.ForeignKey(Driver,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)
     vehicle_id=models.ForeignKey(Vehicle,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)
     requested_vehicle_type=models.ForeignKey(VehicleType,on_delete=models.SET_NULL,null=True,blank=True,related_name='requested_trips')
-    status_id=models.ForeignKey(TripStatus,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)
+    status_id=models.ForeignKey(TripStatus,on_delete=models.DO_NOTHING,related_name='trips',default=6)
     requested_at=models.DateTimeField(auto_now_add=True)
     accepted_at=models.DateTimeField(blank=True,null=True)
     reached_at=models.DateTimeField(blank=True,null=True)

@@ -653,3 +653,52 @@ def rate_trip(request):
         'comments': rating.comments,
         'message': 'Rating submitted successfully',
     }, status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_active_trip(request):
+    """
+    Get the user's active trip for state recovery.
+    Returns the current active trip (not completed/cancelled) if any.
+
+    Used by Flutter app on launch to determine what screen to display.
+    Returns 404 if no active trip exists.
+    """
+    # Active trips are those not completed and not cancelled
+    active_statuses = ['requested','accepted', 'reached', 'in_progress']
+
+    trip = Trip.objects.filter(
+        user_id=request.user,
+        status_id__status_code__in=active_statuses
+    ).select_related(
+        'status_id', 'driver_id', 'driver_id__user_id',
+        'vehicle_id', 'vehicle_id__vehicle_type_id'
+    ).order_by('-requested_at').first()
+
+    # If no active trip, check for recently completed (within 1 hour)
+    # This handles the case where app was killed after trip completion
+    if not trip:
+        from django.utils import timezone
+        from datetime import timedelta
+
+        one_hour_ago = timezone.now() - timedelta(hours=1)
+        trip = Trip.objects.filter(
+            user_id=request.user,
+            status_id__status_code='completed',
+            completed_at__gte=one_hour_ago
+        ).select_related(
+            'status_id', 'driver_id', 'vehicle_id'
+        ).order_by('-completed_at').first()
+
+    if not trip:
+        return error_response(
+            code='NO_ACTIVE_TRIP',
+            message='No active trip found',
+            field='trip',
+            issue='User has no active or recent trip',
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    serializer = TripDetailSerializer(trip)
+    return success_response(serializer.data, status.HTTP_200_OK)
