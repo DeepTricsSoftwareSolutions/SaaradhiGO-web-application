@@ -57,49 +57,64 @@ class CashfreeGateway(BasePaymentGateway):
 
 
     def create_order(self, amount: float, trip_id: int, currency: str = 'INR') -> Optional[Dict[str, Any]]:
-        """Create a Cashfree order using PG SDK."""
-        if not self.pg_client:
-            logger.error("Cashfree PG SDK not available")
-            return None
-            
+        """Create a Cashfree order using REST API to bypass SDK validation bugs."""
         try:
-            order_id = f"trip_{trip_id}_{int(time.time())}"
-            customer_details = CustomerDetails(
-                customer_id=str(trip_id),
-                customer_phone="9999999999",
-                customer_email="user@example.com"
-            )
-            order_meta = OrderMeta(
-                return_url=f"{settings.FRONTEND_URL}/payment/callback?order_id={order_id}",
-                notify_url=f"{settings.BACKEND_URL}/api/payments/webhook/"
-            )
-            order_request = CreateOrderRequest(
-                order_amount=float(amount),
-                order_currency=currency,
-                order_id=order_id,
-                customer_details=customer_details,
-                order_meta=order_meta
-            )
+            order_id = str(f"{trip_id}{int(time.time())}")
+            logger.info(f"order_id------------------------------{order_id}")
             
-            # v3.x SDK style
-            response = self.pg_client.PGCreateOrder(order_request, "2023-08-01")
+            env = "sandbox" if "sandbox" in settings.CASHFREE_PG_BASE_URL.lower() else "api"
+            url = f"https://{env}.cashfree.com/pg/orders"
             
-            if response and hasattr(response, 'data'):
-                return {
-                    'gateway': 'cashfree',
-                    'gateway_order_id': order_id,
-                    'order_id': order_id,
-                    'payment_session_id': getattr(response.data, 'payment_session_id', None),
-                    'order_amount': float(amount),
-                    'payment_link': getattr(response.data, 'payment_link', None),
-                    'cf_order_id': getattr(response.data, 'cf_order_id', None),
+            headers = {
+                "X-Client-Id": settings.CASHFREE_APP_ID,
+                "X-Client-Secret": settings.CASHFREE_SECRET_KEY,
+                "x-api-version": "2023-08-01",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            
+            # Ensure notify_url has a valid protocol
+            notify_url = f"{settings.BACKEND_URL}/api/v1/payments/webhook/"
+            if not notify_url.startswith("http"):
+                notify_url = f"http://{notify_url}"
+                
+            payload = {
+                "order_amount": float(amount),
+                "order_currency": currency,
+                "order_id": order_id,
+                "customer_details": {
+                    "customer_id": str(trip_id),
+                    "customer_phone": "9999999999",
+                    "customer_email": "ankamsaiteja27@gmail.com"
+                },
+                "order_meta": {
+                    "notify_url": notify_url
                 }
-            return None
+            }
+            logger.info(f"order_request payload------------------------------{payload}")
+            
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            
+            logger.info(f"response.data------------------------------{data}")
+            
+            return {
+                'gateway': 'cashfree',
+                'gateway_order_id': order_id,
+                'order_id': order_id,
+                'payment_session_id': data.get('payment_session_id'),
+                'order_amount': float(amount),
+                'payment_link': data.get('payment_link'),
+                'cf_order_id': data.get('cf_order_id'),
+            }
         except Exception as e:
             logger.error(f"CashfreeGateway.create_order failed: {e}")
+            if isinstance(e, requests.exceptions.RequestException) and getattr(e, 'response', None) is not None:
+                logger.error(f"Cashfree API Error Response: {e.response.text}")
             return None
 
-    def verify_payment_signature(self, order_id: str, payment_id: str, signature: str) -> bool:
+    def verify_payment_signature(self, order_id: str) -> bool:
         """Verify payment via order status API."""
         order_status = self.get_order_status(order_id)
         return order_status.get('payment_status') == 'SUCCESS' if order_status else False
@@ -128,10 +143,19 @@ class CashfreeGateway(BasePaymentGateway):
         """Create a Cashfree refund using PG SDK."""
         if not self.pg_client: return None
         try:
+            from cashfree_pg.models.order_create_refund_request import OrderCreateRefundRequest
+            
             refund_id = f"refund_{payment_id}_{int(time.time())}"
-            response = self.pg_client.PGOrderCreateRefund(
-                payment_id, refund_id, str(float(amount)) if amount else None, "Trip cancellation", "2023-08-01"
+            
+            # Note: For full refunds, amount must still be provided in Cashfree, but we'll pass what's given.
+            refund_request = OrderCreateRefundRequest(
+                refund_amount=float(amount) if amount else 0.0,
+                refund_id=refund_id,
+                refund_note="Trip cancellation"
             )
+            
+            # payment_id in the interface holds order_id for Cashfree
+            response = self.pg_client.PGOrderCreateRefund("2023-08-01", payment_id, refund_request)
             if response and hasattr(response, 'data'):
                 return {
                     'gateway': 'cashfree',
@@ -147,21 +171,33 @@ class CashfreeGateway(BasePaymentGateway):
 
 
     def get_order_status(self, order_id: str) -> Optional[Dict[str, Any]]:
-        """Get order status using PG SDK."""
-        if not self.pg_client: return None
+        """Get order status using REST API to bypass SDK validation bugs."""
         try:
-            response = self.pg_client.PGFetchOrder(order_id, "2023-08-01")
-            if response and hasattr(response, 'data'):
-                return {
-                    'gateway': 'cashfree',
-                    'order_id': order_id,
-                    'order_status': getattr(response.data, 'order_status', None),
-                    'payment_status': getattr(response.data, 'payment_status', None),
-                }
-            return None
+            env = "sandbox" if "sandbox" in settings.CASHFREE_PG_BASE_URL.lower() else "api"
+            url = f"https://{env}.cashfree.com/pg/orders/{order_id}"
+            
+            headers = {
+                "X-Client-Id": settings.CASHFREE_APP_ID,
+                "X-Client-Secret": settings.CASHFREE_SECRET_KEY,
+                "x-api-version": "2023-08-01",
+                "Accept": "application/json"
+            }
+            
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            return {
+                'gateway': 'cashfree',
+                'order_id': order_id,
+                'order_status': data.get('order_status'),
+                'payment_status': data.get('order_status') == 'PAID' and 'SUCCESS' or data.get('order_status'),
+            }
         except Exception as e:
             logger.error(f"Fetch order failed: {e}")
-            return None
+            if isinstance(e, requests.exceptions.RequestException) and e.response is not None:
+                logger.error(f"Cashfree response: {e.response.text}")
+  
 
 
 

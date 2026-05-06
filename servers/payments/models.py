@@ -83,7 +83,7 @@ class TransactionHistory(models.Model):
         ('refund', 'Refund to Rider'),
     ]
 
-    trip_id = models.ForeignKey('ride.Trip', on_delete=models.CASCADE, related_name='transactions')
+    trip_id = models.ForeignKey('ride.Trip', on_delete=models.CASCADE, related_name='transactions', null=True, blank=True)
     user_id = models.ForeignKey(User, on_delete=models.CASCADE, related_name='transactions')
     driver_id = models.ForeignKey('driver.Driver', on_delete=models.CASCADE, related_name='transactions')
     withdrawal_request = models.ForeignKey('driver.WithdrawalRequest', on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions')

@@ -2,8 +2,6 @@ services:
   django:
     env_file:
       - .env.local
-    volumes:
-      - .:/App
     ports:
       - "8000:8000"
     command: >
@@ -16,8 +14,6 @@ services:
   celery:
     env_file:
       - .env.local
-    volumes:
-      - .:/App
     command: ["celery", "-A", "base", "worker", "-l", "INFO"]
     depends_on:
       - django

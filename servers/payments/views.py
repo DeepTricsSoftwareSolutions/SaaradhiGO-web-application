@@ -10,7 +10,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
-from django.db import transaction
+from django.db import models, transaction
 from base.utils import success_response, error_response
 from servers.payments.models import Payment, TransactionHistory, PaymentGateway
 from servers.payments.payment_gateways.factory import get_payment_gateway, get_payment_gateway_for_payments, get_payment_gateway_for_payouts
@@ -105,6 +105,7 @@ def create_order(request):
 
     # Create payment order using gateway
     order = gateway.create_order(amount=amount, trip_id=trip.id)
+    logger.info(f"{order}")
     logger.info(f"Payment order created via {gateway.get_name()}: {order}")
     if not order:
         return error_response(
@@ -116,22 +117,34 @@ def create_order(request):
         )
 
     # Create or update Payment record
-    payment, _ = Payment.objects.update_or_create(
-        trip_id=trip,
-        user_id=request.user,
-        defaults={
-            'amount': amount,
-            'method': 'online',
-            'status': 'processing',
-            'payment_gateway': gateway.get_name(),
-            'gateway_order_id': order.get('order_id'),
-            'gateway_metadata': order,
-            # Cashfree specific fields
-            'cashfree_order_id': order.get('order_id'),
-            'cashfree_payment_session_id': order.get('payment_session_id'),
-        }
-    )
-    logger.info(f"Payment created: {payment}")
+    payment = Payment.objects.filter(trip_id=trip, user_id=request.user).order_by('-created_at').first()
+    
+    if payment and payment.status in ['pending', 'processing', 'failed']:
+        # Update existing record
+        payment.amount = amount
+        payment.method = 'online'
+        payment.status = 'processing'
+        payment.payment_gateway = gateway.get_name()
+        payment.gateway_order_id = str(order.get('order_id') or order.get('gateway_order_id', ''))
+        payment.gateway_metadata = order
+        payment.cashfree_order_id = str(order.get('order_id') or order.get('gateway_order_id', ''))
+        payment.cashfree_payment_session_id = order.get('payment_session_id')
+        payment.save()
+    else:
+        # Create new record
+        payment = Payment.objects.create(
+            trip_id=trip,
+            user_id=request.user,
+            amount=amount,
+            method='online',
+            status='processing',
+            payment_gateway=gateway.get_name(),
+            gateway_order_id=str(order.get('order_id') or order.get('gateway_order_id', '')),
+            gateway_metadata=order,
+            cashfree_order_id=str(order.get('order_id') or order.get('gateway_order_id', '')),
+            cashfree_payment_session_id=order.get('payment_session_id'),
+        )
+    logger.info(f"Payment created/updated: {payment}")
 
     # Prepare response based on gateway
     response_data = {
@@ -172,11 +185,11 @@ def verify_payment(request):
     }
     """
     gateway_order_id = request.data.get('gateway_order_id')
-    gateway_payment_id = request.data.get('gateway_payment_id')
-    gateway_signature = request.data.get('gateway_signature')
-    gateway_name = request.data.get('gateway')
+    # gateway_payment_id = request.data.get('gateway_payment_id')
+    # gateway_signature = request.data.get('gateway_signature')
+    gateway_name = request.data.get('gateway','cashfree')
 
-    if not all([gateway_order_id, gateway_payment_id, gateway_signature]):
+    if not all([gateway_order_id]):
         return error_response(
             code='MISSING_FIELDS',
             message='gateway_order_id, gateway_payment_id, and gateway_signature are required',
@@ -232,14 +245,10 @@ def verify_payment(request):
 
     # Verify signature using gateway
     is_valid = gateway.verify_payment_signature(
-        order_id=gateway_order_id,
-        payment_id=gateway_payment_id,
-        signature=gateway_signature
+        order_id=gateway_order_id
     )
     if not is_valid:
         payment.status = 'failed'
-        payment.gateway_payment_id = gateway_payment_id
-        payment.gateway_signature = gateway_signature
         payment.save()
         return error_response(
             code='SIGNATURE_INVALID',
@@ -252,11 +261,7 @@ def verify_payment(request):
     # Mark payment as completed
     with transaction.atomic():
         payment.status = 'completed'
-        payment.gateway_payment_id = gateway_payment_id
-        payment.gateway_signature = gateway_signature
         
-        # Update Cashfree-specific field
-        payment.cashfree_payment_id = gateway_payment_id
         
         payment.save()
 
@@ -282,14 +287,13 @@ def verify_payment(request):
                 amount=payment.amount,
                 method='online',
                 payment_gateway=gateway.get_name(),
-                gateway_payment_id=gateway_payment_id,
                 user_name=request.user.full_name or request.user.phone_number,
                 status='completed',
             )
 
             # Create driver earning for online payment
-            from servers.driver.utils import create_driver_earning
-            create_driver_earning(trip)
+            from servers.driver.utils import credit_driver_wallet
+            credit_driver_wallet(trip)
 
     return success_response({
         'message': 'Payment verified successfully',
@@ -311,15 +315,18 @@ def payment_webhook(request):
         return JsonResponse({'error': 'Method not allowed'}, status=405)
 
     body = request.body
-    signature = request.headers.get('X-Cashfree-Signature')
+    
+    # Cashfree V3 uses x-webhook-signature and x-webhook-timestamp
+    signature = request.headers.get('x-webhook-signature') or request.headers.get('X-Cashfree-Signature')
+    timestamp = request.headers.get('x-webhook-timestamp')
     
     # Determine gateway from headers
     gateway_name = None
-    if request.headers.get('X-Cashfree-Signature'):
+    if signature:
         gateway_name = PaymentGateway.CASHFREE
     
     if not gateway_name:
-        return JsonResponse({'error': 'Missing X-Cashfree-Signature header'}, status=400)
+        return JsonResponse({'error': 'Missing signature header'}, status=400)
 
     # Get payment gateway
     gateway = get_payment_gateway(gateway_name)
@@ -327,7 +334,7 @@ def payment_webhook(request):
         return JsonResponse({'error': f'Gateway {gateway_name} not configured'}, status=503)
 
     # Verify webhook signature
-    if not gateway.verify_webhook_signature(body, signature):
+    if not gateway.verify_webhook_signature(body, signature, timestamp):
         logger.warning(f"Webhook signature verification failed for {gateway_name}")
         return JsonResponse({'error': 'Invalid signature'}, status=400)
 
@@ -347,17 +354,27 @@ def payment_webhook(request):
 
 def _handle_cashfree_webhook(payload, gateway):
     """Handle Cashfree webhook payload."""
-    event = payload.get('event', '')
-    order_id = payload.get('orderId')
-    payment_id = payload.get('referenceId')
+    event_type = payload.get('type', '')
+    data = payload.get('data', {})
+    order_data = data.get('order', {})
+    payment_data = data.get('payment', {})
     
-    if event == 'PAYMENT_SUCCESS':
+    # Extract order and payment IDs (supporting both V2 and V3 structures)
+    order_id = order_data.get('order_id') or payload.get('orderId')
+    payment_id = payment_data.get('cf_payment_id') or payload.get('referenceId')
+    
+    # Normalize event name
+    is_success = event_type == 'PAYMENT_SUCCESS_WEBHOOK' or payload.get('event') == 'PAYMENT_SUCCESS'
+    
+    if is_success:
         if not order_id:
             return JsonResponse({'status': 'skipped', 'reason': 'no order_id'}, status=200)
 
         # Check if it's a Wallet Transaction
         from servers.rider.models import WalletTransaction, Wallet
-        wallet_txn = WalletTransaction.objects.filter(cashfree_order_id=order_id).first()
+        wallet_txn = WalletTransaction.objects.filter(
+            models.Q(cashfree_order_id=order_id) | models.Q(gateway_order_id=order_id)
+        ).first()
         
         if wallet_txn:
             if wallet_txn.status == 'completed':
@@ -365,7 +382,8 @@ def _handle_cashfree_webhook(payload, gateway):
             
             with transaction.atomic():
                 wallet_txn.status = 'completed'
-                wallet_txn.cashfree_payment_id = payment_id
+                wallet_txn.cashfree_payment_id = str(payment_id)
+                wallet_txn.gateway_payment_id = str(payment_id)
                 wallet_txn.save()
 
                 wallet, _ = Wallet.objects.get_or_create(user_id=wallet_txn.user_id)
@@ -378,7 +396,7 @@ def _handle_cashfree_webhook(payload, gateway):
         # Check if it's a Trip Payment
         try:
             payment = Payment.objects.select_related('trip_id', 'trip_id__driver_id').get(
-                cashfree_order_id=order_id
+                models.Q(cashfree_order_id=order_id) | models.Q(gateway_order_id=order_id)
             )
         except Payment.DoesNotExist:
             logger.warning(f"Cashfree Webhook: No payment/wallet matching order {order_id}")
@@ -389,8 +407,8 @@ def _handle_cashfree_webhook(payload, gateway):
 
         with transaction.atomic():
             payment.status = 'completed'
-            payment.cashfree_payment_id = payment_id
-            payment.gateway_payment_id = payment_id
+            payment.cashfree_payment_id = str(payment_id)
+            payment.gateway_payment_id = str(payment_id)
             payment.save()
 
             trip = payment.trip_id
@@ -401,14 +419,14 @@ def _handle_cashfree_webhook(payload, gateway):
             if trip.driver_id:
                 TransactionHistory.objects.get_or_create(
                     trip_id=trip,
-                    cashfree_payment_id=payment_id,
+                    gateway_payment_id=str(payment_id),
                     defaults={
                         'user_id': payment.user_id,
                         'driver_id': trip.driver_id,
                         'amount': payment.amount,
                         'method': 'online',
                         'payment_gateway': PaymentGateway.CASHFREE,
-                        'gateway_payment_id': payment_id,
+                        'cashfree_payment_id': str(payment_id),
                         'user_name': payment.user_id.full_name or payment.user_id.phone_number,
                         'status': 'completed',
                     }
@@ -422,12 +440,12 @@ def _handle_cashfree_webhook(payload, gateway):
         return JsonResponse({'status': 'ok'}, status=200)
 
     # Handle other Cashfree events
-    elif event in ['PAYMENT_FAILED', 'PAYMENT_PENDING']:
-        logger.info(f"Cashfree Webhook: Payment {order_id} status: {event}")
+    elif event_type in ['PAYMENT_FAILED_WEBHOOK'] or payload.get('event') == 'PAYMENT_FAILED':
+        logger.info(f"Cashfree Webhook: Payment {order_id} failed")
         return JsonResponse({'status': 'ok'}, status=200)
 
     # Log other events but don't process
-    logger.info(f"Cashfree Webhook: Received event {event}, ignoring")
+    logger.info(f"Cashfree Webhook: Received event {event_type or payload.get('event')}, ignoring")
     return JsonResponse({'status': 'ok'}, status=200)
 
 
@@ -442,15 +460,18 @@ def payout_webhook(request):
         return JsonResponse({'error': 'Method not allowed'}, status=405)
 
     body = request.body
-    signature = request.headers.get('X-Cashfree-Signature')
+    
+    # Cashfree V3 uses x-webhook-signature and x-webhook-timestamp
+    signature = request.headers.get('x-webhook-signature') or request.headers.get('X-Cashfree-Signature')
+    timestamp = request.headers.get('x-webhook-timestamp')
     
     # Determine gateway from headers
     gateway_name = None
-    if request.headers.get('X-Cashfree-Signature'):
+    if signature:
         gateway_name = PaymentGateway.CASHFREE
     
     if not gateway_name:
-        return JsonResponse({'error': 'Missing X-Cashfree-Signature header'}, status=400)
+        return JsonResponse({'error': 'Missing signature header'}, status=400)
 
     # Get payment gateway for payouts
     gateway = get_payment_gateway_for_payouts()
@@ -458,7 +479,7 @@ def payout_webhook(request):
         return JsonResponse({'error': f'Gateway {gateway_name} not configured'}, status=503)
 
     # Verify webhook signature
-    if not gateway.verify_webhook_signature(body, signature):
+    if not gateway.verify_webhook_signature(body, signature, timestamp):
         logger.warning(f"Payout webhook signature verification failed for {gateway_name}")
         return JsonResponse({'error': 'Invalid signature'}, status=400)
 
@@ -479,8 +500,9 @@ def payout_webhook(request):
 def _handle_cashfree_payout_webhook(payload, gateway):
     """Handle Cashfree payout webhook payload."""
     event = payload.get('event', '')
-    payout_id = payload.get('payoutId')
-    reference_id = payload.get('referenceId')
+    # Extract payout IDs (supporting both V2 and V3 structures)
+    payout_id = payload.get('transfer_id') or payload.get('payoutId')
+    reference_id = payload.get('cf_transfer_id') or payload.get('referenceId')
     status = payload.get('status')
     failure_reason = payload.get('failureReason', '')
     
@@ -506,7 +528,7 @@ def _handle_cashfree_payout_webhook(payload, gateway):
         return JsonResponse({'status': 'already_processed'}, status=200)
     
     # Handle payout events
-    if event == 'PAYOUT_SUCCESS':
+    if event == 'TRANSFER_SUCCESS' or event == 'PAYOUT_SUCCESS':
         with transaction.atomic():
             withdrawal.status = 'completed'
             withdrawal.payout_status = status if status else 'success'
@@ -515,14 +537,15 @@ def _handle_cashfree_payout_webhook(payload, gateway):
             # Create transaction history entry
             TransactionHistory.objects.get_or_create(
                 withdrawal_request=withdrawal,
-                cashfree_payment_id=payout_id,
+                gateway_transaction_id=str(reference_id),
                 defaults={
                     'user_id': withdrawal.driver.user_id,
                     'driver_id': withdrawal.driver,
                     'amount': withdrawal.amount,
                     'method': withdrawal.payout_method,
                     'payment_gateway': PaymentGateway.CASHFREE,
-                    'gateway_payment_id': payout_id,
+                    'gateway_payment_id': str(payout_id),
+                    'cashfree_payment_id': str(payout_id),
                     'user_name': withdrawal.driver.user_id.full_name or withdrawal.driver.user_id.phone_number,
                     'status': 'completed',
                     'txn_type': 'payout',
@@ -532,7 +555,7 @@ def _handle_cashfree_payout_webhook(payload, gateway):
         logger.info(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} completed successfully")
         return JsonResponse({'status': 'ok'}, status=200)
     
-    elif event == 'PAYOUT_FAILED':
+    elif event == 'TRANSFER_FAILED' or event == 'PAYOUT_FAILED':
         with transaction.atomic():
             withdrawal.status = 'failed'
             withdrawal.payout_status = status if status else 'failed'
@@ -543,14 +566,14 @@ def _handle_cashfree_payout_webhook(payload, gateway):
             # Create transaction history entry for failed payout
             TransactionHistory.objects.get_or_create(
                 withdrawal_request=withdrawal,
-                cashfree_payment_id=payout_id,
+                gateway_payment_id=str(payout_id),
                 defaults={
                     'user_id': withdrawal.driver.user_id,
                     'driver_id': withdrawal.driver,
                     'amount': withdrawal.amount,
                     'method': withdrawal.payout_method,
                     'payment_gateway': PaymentGateway.CASHFREE,
-                    'gateway_payment_id': payout_id,
+                    'cashfree_payment_id': str(payout_id),
                     'user_name': withdrawal.driver.user_id.full_name or withdrawal.driver.user_id.phone_number,
                     'status': 'failed',
                     'txn_type': 'payout',
@@ -568,7 +591,7 @@ def _handle_cashfree_payout_webhook(payload, gateway):
         logger.info(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} is pending")
         return JsonResponse({'status': 'ok'}, status=200)
     
-    elif event == 'PAYOUT_REVERSED':
+    elif event == 'TRANSFER_REVERSED' or event == 'PAYOUT_REVERSED':
         with transaction.atomic():
             withdrawal.status = 'reversed'
             withdrawal.payout_status = status if status else 'reversed'
@@ -577,14 +600,14 @@ def _handle_cashfree_payout_webhook(payload, gateway):
             # Create transaction history entry for reversal
             TransactionHistory.objects.get_or_create(
                 withdrawal_request=withdrawal,
-                cashfree_payment_id=payout_id,
+                gateway_payment_id=str(payout_id),
                 defaults={
                     'user_id': withdrawal.driver.user_id,
                     'driver_id': withdrawal.driver,
                     'amount': withdrawal.amount,
                     'method': withdrawal.payout_method,
                     'payment_gateway': PaymentGateway.CASHFREE,
-                    'gateway_payment_id': payout_id,
+                    'cashfree_payment_id': str(payout_id),
                     'user_name': withdrawal.driver.user_id.full_name or withdrawal.driver.user_id.phone_number,
                     'status': 'reversed',
                     'txn_type': 'payout',

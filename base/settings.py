@@ -111,6 +111,10 @@ TEMPLATES = [
     },
 ]
 
+#URLS
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+BACKEND_URL  = os.environ.get("BACKEND_URL", "http://localhost:8000")
+
 #AWS
 AWS_SECRET_ACCESS_KEY=os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_ACCESS_KEY_ID=os.environ.get("AWS_ACCESS_KEY_ID")
@@ -139,6 +143,7 @@ CASHFREE_SECRET_KEY=os.environ.get("CASHFREE_SECRET_KEY", "")
 CASHFREE_WEBHOOK_SECRET=os.environ.get("CASHFREE_WEBHOOK_SECRET", "")
 CASHFREE_API_VERSION=os.environ.get("CASHFREE_API_VERSION", "2023-08-01")
 CASHFREE_ENVIRONMENT=os.environ.get("CASHFREE_ENVIRONMENT", "sandbox")  # sandbox or production
+CASHFREE_PG_BASE_URL = os.environ.get("CASHFREE_PG_BASE_URL", "https://sandbox.cashfree.com")
 
 # Payment Gateway Selection
 PAYMENT_GATEWAY=os.environ.get("PAYMENT_GATEWAY", "cashfree")

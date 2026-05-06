@@ -67,7 +67,6 @@ def get_available_gateways() -> list:
     # Check if Cashfree is available
     try:
         import cashfree_pg
-        import cashfree_payouts
         if getattr(settings, 'CASHFREE_APP_ID', None) and getattr(settings, 'CASHFREE_SECRET_KEY', None):
             gateways.append('cashfree')
     except ImportError:

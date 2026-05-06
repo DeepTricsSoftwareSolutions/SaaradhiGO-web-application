@@ -37,9 +37,7 @@ class BasePaymentGateway(ABC):
     @abstractmethod
     def verify_payment_signature(
         self, 
-        order_id: str, 
-        payment_id: str, 
-        signature: str
+        order_id: str
     ) -> bool:
         """
         Verify payment signature (for frontend callback).
@@ -55,13 +53,14 @@ class BasePaymentGateway(ABC):
         pass
     
     @abstractmethod
-    def verify_webhook_signature(self, body: bytes, signature: str) -> bool:
+    def verify_webhook_signature(self, body: bytes, signature: str, timestamp: Optional[str] = None) -> bool:
         """
         Verify webhook signature.
         
         Args:
             body: Raw request body
             signature: Webhook signature header
+            timestamp: Webhook timestamp header (optional)
             
         Returns:
             True if signature is valid
@@ -82,53 +81,52 @@ class BasePaymentGateway(ABC):
         """
         pass
     
-    @abstractmethod
-    def create_payout(
-        self,
-        contact_id: str,
-        account_number: str,
-        ifsc_code: str,
-        amount: float,
-        purpose: str = "payout",
-        currency: str = "INR"
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Create a payout to a bank account.
-        
-        Args:
-            contact_id: Contact/beneficiary ID
-            account_number: Bank account number
-            ifsc_code: Bank IFSC code
-            amount: Amount in currency units
-            purpose: Payout purpose
-            currency: Currency code
-            
-        Returns:
-            Payout object or None on failure
-        """
-        pass
+    # @abstractmethod
+    # def create_payout(
+    #     self,
+    #     contact_id: str,
+    #     account_number: str,
+    #     ifsc_code: str,
+    #     amount: float,
+    #     purpose: str = "payout",
+    #     currency: str = "INR",
+    #     reference_id: Optional[str] = None,
+    #     name: Optional[str] = None
+    # ) -> Optional[Dict[str, Any]]:
+    #     """
+    #     Create a payout to a bank account.
+    #     """
+    #     pass
     
-    @abstractmethod
-    def create_upi_payout(
-        self,
-        upi_id: str,
-        amount: float,
-        purpose: str = "payout",
-        currency: str = "INR"
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Create a payout to a UPI ID.
-        
-        Args:
-            upi_id: UPI ID (e.g., 'user@upi')
-            amount: Amount in currency units
-            purpose: Payout purpose
-            currency: Currency code
-            
-        Returns:
-            Payout object or None on failure
-        """
-        pass
+    # @abstractmethod
+    # def create_upi_payout(
+    #     self,
+    #     upi_id: str,
+    #     amount: float,
+    #     purpose: str = "payout",
+    #     currency: str = "INR",
+    #     reference_id: Optional[str] = None,
+    #     name: Optional[str] = None
+    # ) -> Optional[Dict[str, Any]]:
+    #     """
+    #     Create a payout to a UPI ID.
+    #     """
+    #     pass
+
+    # @abstractmethod
+    # def create_beneficiary(
+    #     self,
+    #     beneficiary_id: str,
+    #     name: str,
+    #     email: str,
+    #     phone: str,
+    #     bank_account: Optional[Dict] = None,
+    #     upi_id: Optional[str] = None
+    # ) -> Optional[Dict[str, Any]]:
+    #     """
+    #     Create a beneficiary/contact for payouts.
+    #     """
+    #     pass
     
     @abstractmethod
     def get_order_status(self, order_id: str) -> Optional[Dict[str, Any]]:
@@ -143,15 +141,15 @@ class BasePaymentGateway(ABC):
         """
         pass
     
-    @abstractmethod
-    def get_payout_status(self, payout_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get the status of a payout.
+    # @abstractmethod
+    # def get_payout_status(self, payout_id: str) -> Optional[Dict[str, Any]]:
+    #     """
+    #     Get the status of a payout.
         
-        Args:
-            payout_id: Gateway payout ID
+    #     Args:
+    #         payout_id: Gateway payout ID
             
-        Returns:
-            Payout status object or None on failure
-        """
-        pass
+    #     Returns:
+    #         Payout status object or None on failure
+    #     """
+    #     pass

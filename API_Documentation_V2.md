@@ -369,7 +369,7 @@ Uses Redis to fetch active online drivers within the radius.
 ```
 
 ### 2.9 Create Wallet Order
-Initiates a Razorpay order for adding money to the wallet.
+Initiates a Cashfree order for adding money to the wallet.
 - **URL**: `/rider/wallet/create-order/`
 - **Method**: `POST`
 - **Auth Required**: Yes
@@ -389,16 +389,13 @@ Initiates a Razorpay order for adding money to the wallet.
   "status": "success",
   "data": {
     "transaction_id": 1,
-    "razorpay_order_id": "order_Fxy...",
+    "gateway_order_id": "order_Fxy...",
     "amount": "500.00",
-    "amount_paise": 50000,
     "currency": "INR",
     "description": "Wallet Top-up",
-    "prefill": {
-        "name": "Raja Kumar",
-        "contact": "+919876543210",
-        "email": "raja@example.com"
-    }
+    "payment_session_id": "session_xyz...",
+    "order_token": "token_abc...",
+    "gateway": "cashfree"
   }
 }
 ```
@@ -412,16 +409,14 @@ Secures the transaction and augments the wallet balance upon success.
 **Parameters**:
 | Name | Type | Required | Description |
 | ---- | ---- | -------- | ----------- |
-| `razorpay_order_id`| string | **Yes** | From 2.9 |
-| `razorpay_payment_id`| string | **Yes** | Issued by Razorpay. |
-| `razorpay_signature` | string | **Yes** | Generated hash signature. |
+| `gateway_order_id`| string | **Yes** | From 2.9 |
+| `gateway_payment_id`| string | **Yes** | Issued by Cashfree. |
 
 **Sample Request**:
 ```json
 {
-  "razorpay_order_id": "order_Fxy...",
-  "razorpay_payment_id": "pay_Fxy...",
-  "razorpay_signature": "fa17de..."
+  "gateway_order_id": "order_Fxy...",
+  "gateway_payment_id": "pay_Fxy..."
 }
 ```
 **Sample Response (200 OK)**:
@@ -459,7 +454,8 @@ Get all wallet transactions for the authenticated user.
         "amount": "500.00",
         "txn_type": "credit",
         "status": "completed",
-        "razorpay_order_id": "order_Fxy...",
+        "gateway_order_id": "order_Fxy...",
+        "gateway_payment_id": "pay_Fxy...",
         "created_at": "2026-04-07T10:00:00Z"
       }
     ]
@@ -468,7 +464,7 @@ Get all wallet transactions for the authenticated user.
 ```
 
 ### 2.12 Direct Wallet Payment
-Initiate a direct payment from wallet without Razorpay. Used for internal payments like trip payments.
+Initiate a direct payment from wallet without external gateway. Used for internal payments like trip payments.
 - **URL**: `/rider/wallet/payment/`
 - **Method**: `POST`
 - **Auth Required**: Yes
@@ -906,7 +902,7 @@ Post completion review process.
 ## 5. Payments (App: `payments`)
 
 ### 5.1 Create Order
-Initiates Razorpay backend order processing for an intended payment target.
+Initiates Cashfree backend order processing for an intended payment target.
 - **URL**: `/payments/create-order/`
 - **Method**: `POST`
 - **Auth Required**: Yes
@@ -926,8 +922,8 @@ Initiates Razorpay backend order processing for an intended payment target.
   "status": "success",
   "data": {
     "payment_id": 10,
-    "razorpay_order_id": "order_Fxy12344",
-    "razorpay_key_id": "rzp_test_123Key",
+    "gateway": "cashfree",
+    "gateway_order_id": "order_Fxy12344",
     "amount": "245.50",
     "amount_paise": 24550,
     "currency": "INR",
@@ -937,13 +933,16 @@ Initiates Razorpay backend order processing for an intended payment target.
         "name": "Raja Kumar",
         "contact": "+919876543210",
         "email": "raja@example.com"
-    }
+    },
+    "cashfree_payment_session_id": "session_xyz...",
+    "cashfree_app_id": "your_app_id",
+    "order_token": "token_abc..."
   }
 }
 ```
 
 ### 5.2 Verify Order Payment
-Performs the secure signature validity check after Razorpay returns Success payload.
+Performs the secure signature validity check after Cashfree returns Success payload.
 - **URL**: `/payments/verify/`
 - **Method**: `POST`
 - **Auth Required**: Yes
@@ -951,16 +950,16 @@ Performs the secure signature validity check after Razorpay returns Success payl
 **Parameters**:
 | Name | Type | Required | Description |
 | ---- | ---- | -------- | ----------- |
-| `razorpay_order_id`| string | **Yes** | Sent from step 5.1 |
-| `razorpay_payment_id`| string | **Yes** | Issued by Razorpay. |
-| `razorpay_signature` | string | **Yes** | Generated hash signature. |
+| `gateway_order_id`| string | **Yes** | Sent from step 5.1 |
+| `gateway_payment_id`| string | **Yes** | Issued by Cashfree. |
+| `gateway_signature` | string | **Yes** | Generated hash signature. |
+| `gateway` | string | No | Optional, defaults to cashfree. |
 
 **Sample Request**:
 ```json
 {
-  "razorpay_order_id": "order_Fxy12344",
-  "razorpay_payment_id": "pay_Fxy12344",
-  "razorpay_signature": "fa17de1234abc33"
+  "gateway_order_id": "order_Fxy12344",
+  "gateway": "cashfree"
 }
 ```
 **Sample Response (200 OK)**:
@@ -971,16 +970,17 @@ Performs the secure signature validity check after Razorpay returns Success payl
     "message": "Payment verified successfully",
     "payment_id": 10,
     "status": "completed",
-    "amount": "245.50"
+    "amount": "245.50",
+    "gateway": "cashfree"
   }
 }
 ```
 
-### 5.3 Razorpay Webhook
-Handles Razorpay `payment.captured` background updates. No JWT needed (uses signature).
+### 5.3 Payment Webhook
+Handles Cashfree background payment updates. No JWT needed (uses signature).
 - **URL**: `/payments/webhook/`
 - **Method**: `POST`
-- **Auth Required**: No (Verified via `X-Razorpay-Signature` Headers).
+- **Auth Required**: No (Verified via `x-webhook-signature` or `X-Cashfree-Signature` Headers).
 
 **Sample Request Payload**: (Handled by provider server).
 **Sample Response**: `{"status": "ok"}`
@@ -1007,8 +1007,12 @@ Retrieve user's paginated logged transactions and payments constraints.
         "amount": "245.50",
         "method": "online",
         "status": "completed",
-        "razorpay_order_id": "order_Fxy12344",
-        "razorpay_payment_id": "pay_Fxy12344",
+        "payment_gateway": "cashfree",
+        "gateway_order_id": "order_Fxy12344",
+        "gateway_payment_id": "pay_Fxy12344",
+        "cashfree_order_id": "order_Fxy12344",
+        "cashfree_payment_id": "pay_Fxy12344",
+        "cashfree_payment_session_id": "session_xyz...",
         "created_at": "2026-04-07T12:00:00Z"
       }
     ]
