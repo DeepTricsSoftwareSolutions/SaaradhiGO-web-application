@@ -67,7 +67,7 @@ class TripDetailSerializer(TripListSerializer):
     class Meta(TripListSerializer.Meta):
         fields = TripListSerializer.Meta.fields + [
             'accepted_at', 'started_at',
-            'fare_breakdown', 'ratings',
+            'fare_breakdown', 'ratings','otp'
         ]
 
     def get_fare_breakdown(self, obj):

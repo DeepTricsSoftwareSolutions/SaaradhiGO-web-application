@@ -3,6 +3,7 @@ import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
+from base.utils import generate_otp
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
         """
         try:
             data = json.loads(text_data)
+            print(data)
             lng = data.get('lng')
             lat = data.get('lat')
 
@@ -85,8 +87,8 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
                 }))
                 return
 
-            # Update location in Redis Geo
-            result = await self._update_driver_location(lng, lat)
+            # Update location in Redis Geo (using the "smart" checker)
+            result = await self._add_driver_location(lng, lat)
 
             if result.get('success'):
                 await self.send(text_data=json.dumps({
@@ -237,6 +239,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             distance_km = data.get('distance_km')
             duration_min = data.get('duration_min')
             vehicle_type = data.get('vehicle_type')
+            payment_method = data.get('payment_method', 'deferred')
 
             # Validate required fields
             if not all([pickup_lat, pickup_lng, destination_lat, destination_lng, pickup_address, destination_address]):
@@ -257,6 +260,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                 distance_km=distance_km,
                 duration_min=duration_min,
                 vehicle_type=vehicle_type,
+                payment_method=payment_method,
             )
 
             if not trip:
@@ -317,7 +321,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
         Expected: {"action": "retry", "trip_id": int, "radius": int (optional, meters)}
         """
         trip_id = data.get('trip_id')
-        radius = min(int(data.get('radius', 5000)), 15000)
+        radius = min(int(data.get('radius', 5000)), 5000)
 
         if not trip_id:
             await self.send(text_data=json.dumps({
@@ -424,13 +428,41 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
 
     async def trip_update(self, event):
         """Send trip status update to rider."""
-        await self.send(text_data=json.dumps({
+        response_data = {
             'type': 'trip_update',
             'trip_id': event['trip_id'],
             'status': event['status'],
             'message': event.get('message', ''),
             'driver_id': event.get('driver_id'),
             'driver_name': event.get('driver_name', ''),
+        }
+        
+        # Add driver info and OTP if the ride was accepted
+        if event['status'] == 'accept':
+            if 'otp' in event:
+                response_data['otp'] = event['otp']
+            if 'driver_info' in event:
+                response_data['driver_info'] = event['driver_info']
+            if 'vehicle_info' in event:
+                response_data['vehicle_info'] = event['vehicle_info']
+
+        await self.send(text_data=json.dumps(response_data))
+
+    async def driver_location_update(self, event):
+        """Send live driver location to rider."""
+        await self.send(text_data=json.dumps({
+            'type': 'driver_location_update',
+            'lng': event['lng'],
+            'lat': event['lat'],
+            'driver_id': event['driver_id'],
+        }))
+        
+    async def cash_payment_confirmed(self, event):
+        """Notify rider that cash payment has been confirmed."""
+        await self.send(text_data=json.dumps({
+            'type': 'cash_payment_confirmed',
+            'trip_id': event['trip_id'],
+            'message': 'Cash payment has been confirmed by driver',
         }))
 
     # -- Database helpers --
@@ -438,7 +470,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _create_trip(self, pickup_lat, pickup_lng, destination_lat, destination_lng,
                      pickup_address, destination_address,
-                     distance_km=None, duration_min=None, vehicle_type=None):
+                     distance_km=None, duration_min=None, vehicle_type=None, payment_method='deferred'):
         from decimal import Decimal
         from servers.ride.models import Trip, FarePricing
         from servers.ride.utils import estimate_amount, validate_distance
@@ -485,6 +517,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     estimated_distance_km=Decimal(str(dist)) if dist else None,
                     surge_multiplier=fare['surge_multiplier'],
                     requested_vehicle_type=requested_vt,
+                    payment_method=payment_method,
                 )
 
                 FarePricing.objects.create(
@@ -495,6 +528,20 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     surge_multiplier=fare['surge_multiplier'],
                     total_fare=fare['total_fare'],
                 )
+
+            # Cache new trip in Redis for fast state reads
+            from servers.redis_client import cache_trip as _cache_trip
+            _cache_trip(
+                trip.id,
+                status='requested',
+                rider_id=str(self.user.id),
+                pickup_lat=str(pickup_lat),
+                pickup_lng=str(pickup_lng),
+                destination_lat=str(destination_lat),
+                destination_lng=str(destination_lng),
+                estimated_fare=str(fare['total_fare']),
+                payment_method=payment_method or 'cash',
+            )
 
             # Schedule auto-cancel task
             from servers.ride.tasks import auto_cancel_trip
@@ -561,6 +608,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
     Connect: ws://host/ws/ride/trip/<trip_id>/?token=<jwt>
     Send (driver only):
         {"action": "accept"}
+        {"action": "reached"}
         {"action": "start"}
         {"action": "complete"}
         {"action": "cancel"}
@@ -598,16 +646,17 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
     async def receive(self, text_data):
         """
         Receive trip actions from driver.
-        Expected: {"action": "accept|start|complete|cancel"}
+        Expected: {"action": "accept|reached|start|complete|cancel"}
         """
         try:
             data = json.loads(text_data)
             action = data.get('action')
+            otp_input = data.get('otp')
 
-            if action not in ('accept', 'start', 'complete', 'cancel'):
+            if action not in ('accept', 'reached', 'start', 'complete', 'cancel'):
                 await self.send(text_data=json.dumps({
                     'type': 'error',
-                    'message': 'Invalid action. Must be: accept, start, complete, or cancel'
+                    'message': 'Invalid action. Must be: accept, reached, start, complete, or cancel'
                 }))
                 return
 
@@ -622,6 +671,14 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                     }))
                     return
                 result = await self._accept_trip()
+            elif action == 'reached':
+                if not is_driver:
+                    await self.send(text_data=json.dumps({
+                        'type': 'error',
+                        'message': 'Only drivers can mark as reached'
+                    }))
+                    return
+                result = await self._update_trip_status('reached')
             elif action == 'start':
                 if not is_driver:
                     await self.send(text_data=json.dumps({
@@ -629,7 +686,13 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                         'message': 'Only drivers can start rides'
                     }))
                     return
-                result = await self._update_trip_status('in_progress')
+                if not otp_input:
+                    await self.send(text_data=json.dumps({
+                        'type': 'error',
+                        'message': 'OTP is required to start the ride'
+                    }))
+                    return
+                result = await self._update_trip_status('in_progress', otp_input=otp_input)
             elif action == 'complete':
                 if not is_driver:
                     await self.send(text_data=json.dumps({
@@ -638,30 +701,56 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                     }))
                     return
                 result = await self._update_trip_status('completed')
+            elif action == 'confirm_cash':
+                if not is_driver:
+                    await self.send(text_data=json.dumps({
+                        'type': 'error',
+                        'message': 'Only drivers can confirm cash payments'
+                    }))
+                    return
+                result = await self._confirm_cash_payment()
             elif action == 'cancel':
                 result = await self._update_trip_status('cancelled')
 
             if result.get('success'):
                 # Broadcast status to all participants in the trip group
-                await self.channel_layer.group_send(self.trip_group, {
+                status_event = {
                     'type': 'trip_status_update',
                     'trip_id': self.trip_id,
                     'status': action,
                     'message': result.get('message', ''),
                     'driver_id': result.get('driver_id'),
-                })
+                }
+                
+                if action == 'accept':
+                    status_event.update({
+                        'otp': result.get('otp'),
+                        'driver_info': result.get('driver_info'),
+                        'vehicle_info': result.get('vehicle_info'),
+                    })
+
+                await self.channel_layer.group_send(self.trip_group, status_event)
 
                 # Also notify the rider via their personal group
                 rider_id = result.get('rider_id')
                 if rider_id:
-                    await self.channel_layer.group_send(f'rider_{rider_id}', {
+                    rider_event = {
                         'type': 'trip_update',
                         'trip_id': self.trip_id,
                         'status': action,
                         'message': result.get('message', ''),
                         'driver_id': result.get('driver_id'),
                         'driver_name': result.get('driver_name', ''),
-                    })
+                    }
+                    
+                    if action == 'accept':
+                        rider_event.update({
+                            'otp': result.get('otp'),
+                            'driver_info': result.get('driver_info'),
+                            'vehicle_info': result.get('vehicle_info'),
+                        })
+
+                    await self.channel_layer.group_send(f'rider_{rider_id}', rider_event)
             else:
                 await self.send(text_data=json.dumps({
                     'type': 'error',
@@ -699,6 +788,14 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             'lng': event['lng'],
             'lat': event['lat'],
             'driver_id': event['driver_id'],
+        }))
+        
+    async def cash_payment_confirmed(self, event):
+        """Notify rider that cash payment has been confirmed."""
+        await self.send(text_data=json.dumps({
+            'type': 'cash_payment_confirmed',
+            'trip_id': event['trip_id'],
+            'message': 'Cash payment has been confirmed by driver',
         }))
 
     # -- Database helpers --
@@ -751,12 +848,33 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 trip.driver_id = driver
                 trip.status_id = status_obj
                 trip.accepted_at = timezone.now()
+                
+                # Generate and save OTP for the trip
+                otp = generate_otp(6)
+                trip.otp = otp
                 trip.save()
 
             # Mark driver as busy in Redis so they don't get new ride requests
             from servers.redis_client import set_driver_active_trip, remove_driver
             set_driver_active_trip(driver.id, trip.id)
             remove_driver(driver.id)  # Remove from nearby drivers pool
+
+            # Update ride cache with accepted status and driver assignment
+            from servers.redis_client import cache_trip as _cache_trip
+            vehicle = driver.active_vehicle
+            _cache_trip(
+                trip.id,
+                status='accepted',
+                driver_id=str(driver.id),
+                driver_name=driver.user_id.full_name,
+                driver_phone=driver.user_id.phone_number,
+                driver_rating=str(driver.ratings),
+                vehicle_model=vehicle.model if vehicle else 'Unknown',
+                vehicle_brand=vehicle.brand if vehicle else 'Unknown',
+                vehicle_number=vehicle.vehicle_number if vehicle else 'Unknown',
+                vehicle_color=vehicle.color if vehicle else 'Unknown',
+                otp=otp,
+            )
 
             # Create notification for rider
             from servers.rider.models import Notification
@@ -774,112 +892,219 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 {"trip_id": str(trip.id), "type": "ride_accepted"}
             )
 
+            # Prepare driver and vehicle info for response
+            driver_info = {
+                'name': driver.user_id.full_name,
+                'id': driver.id,
+                'phone_number': driver.user_id.phone_number,
+                'stars': str(driver.ratings),
+            }
+            
+            vehicle = driver.active_vehicle
+            vehicle_info = {
+                'model': vehicle.model if vehicle else 'Unknown',
+                'brand': vehicle.brand if vehicle else 'Unknown',
+                'vehicle_number': vehicle.vehicle_number if vehicle else 'Unknown',
+                'color': vehicle.color if vehicle else 'Unknown',
+            }
+
             return {
                 'success': True,
                 'message': 'Trip accepted',
                 'driver_id': driver.id,
                 'driver_name': str(driver),
                 'rider_id': trip.user_id_id,
+                'otp': trip.otp,
+                'driver_info': driver_info,
+                'vehicle_info': vehicle_info,
             }
         except Trip.DoesNotExist:
+            
             return {'success': False, 'error': 'Trip not found'}
         except Exception as e:
             logger.error(f"Error accepting trip: {str(e)}")
             return {'success': False, 'error': str(e)}
 
     @database_sync_to_async
-    def _update_trip_status(self, status_code):
+    def _confirm_cash_payment(self):
+        from servers.payments.models import Payment, TransactionHistory
+        from servers.ride.models import Trip
+        from django.db import transaction
+        
+        try:
+            with transaction.atomic():
+                trip = Trip.objects.select_for_update().get(id=self.trip_id)
+                payment = trip.payments.filter(method='cash').first()
+                if not payment:
+                    return {'success': False, 'error': 'No cash payment found for this trip'}
+                
+                payment.status = 'completed'
+                payment.save()
+                
+                # Create transaction history
+                TransactionHistory.objects.create(
+                    trip_id=trip,
+                    user_id=trip.user_id,
+                    driver_id=trip.driver_id,
+                    amount=payment.amount,
+                    method='cash',
+                    user_name=trip.user_id.full_name or trip.user_id.phone_number,
+                    status='completed',
+                    txn_type='credit'
+                )
+                
+                # Credit driver's wallet
+                from servers.driver.utils import credit_driver_wallet
+                credit_driver_wallet(trip)
+                
+            return {'success': True, 'message': 'Cash payment confirmed', 'rider_id': trip.user_id_id}
+        except Trip.DoesNotExist:
+            return {'success': False, 'error': 'Trip not found'}
+        except Exception as e:
+            logger.error(f"Error confirming cash payment: {str(e)}", exc_info=True)
+            return {'success': False, 'error': str(e)}
+            
+    @database_sync_to_async
+    def _update_trip_status(self, status_code, otp_input=None):
         from servers.ride.models import Trip, TripStatus
         from django.utils import timezone
+        from django.db import transaction
 
         try:
-            trip = Trip.objects.get(id=self.trip_id)
+            with transaction.atomic():
+                # select_for_update() locks the row until the transaction ends
+                trip = Trip.objects.select_for_update().get(id=self.trip_id)
+                current_status = trip.status_id.status_code if trip.status_id else None
 
-            if status_code == 'cancelled' and trip.status_id and trip.status_id.status_code in ['completed', 'cancelled']:
-                return {'success': False, 'error': f'Trip is already {trip.status_id.status_code}'}
+                # Define strict transition rules
+                allowed_transitions = {
+                    'reached': ['accepted'],
+                    'in_progress': ['accepted', 'reached'],
+                    'completed': ['in_progress'],
+                    'cancelled': ['accepted', 'reached', 'in_progress'],
+                }
 
-            status_obj, _ = TripStatus.objects.get_or_create(
-                status_code=status_code,
-                defaults={'description': f'Trip {status_code}'}
-            )
+                # Enforcement of status transitions
+                if status_code in allowed_transitions:
+                    if current_status not in allowed_transitions[status_code]:
+                        return {
+                            'success': False, 
+                            'error': f'Invalid status transition: cannot change from {current_status} to {status_code}'
+                        }
 
-            trip.status_id = status_obj
+                if status_code == 'cancelled' and current_status in ['completed', 'cancelled']:
+                    return {'success': False, 'error': f'Trip is already {current_status}'}
 
-            # Set timestamps based on status
-            if status_code == 'in_progress':
-                trip.started_at = timezone.now()
-                from servers.auth_user.services import send_push_notification
-                send_push_notification(
-                    trip.user_id,
-                    "Ride Started",
-                    "Your ride is now in progress.",
-                    {"trip_id": str(trip.id), "type": "ride_started"}
-                )
-            elif status_code == 'completed':
-                trip.completed_at = timezone.now()
-                # Create payment on trip completion
-                self._create_payment_on_complete(trip)
-                
-                from servers.rider.models import Notification
-                Notification.objects.create(
-                    user_id=trip.user_id,
-                    title='Ride Completed',
-                    message=f'Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}',
-                )
-                
-                from servers.auth_user.services import send_push_notification
-                send_push_notification(
-                    trip.user_id,
-                    "Ride Completed",
-                    f"Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}",
-                    {"trip_id": str(trip.id), "type": "ride_completed"}
-                )
-            elif status_code == 'cancelled':
-                trip.cancelled_at = timezone.now()
-                self._process_refund_on_cancel(trip)
-                
-                from servers.rider.models import Notification
-                Notification.objects.create(
-                    user_id=trip.user_id,
-                    title='Ride Cancelled',
-                    message=f'Your ride has been cancelled.',
-                )
-                
-                from servers.auth_user.services import send_push_notification
-                send_push_notification(
-                    trip.user_id,
-                    "Ride Cancelled",
-                    "Your ride has been cancelled.",
-                    {"trip_id": str(trip.id), "type": "ride_cancelled"}
+                if status_code == 'in_progress':
+                    if str(trip.otp) != str(otp_input):
+                        return {
+                            'success': False,
+                            'error': 'Invalid OTP provided'
+                        }
+                        
+                status_obj, _ = TripStatus.objects.get_or_create(
+                    status_code=status_code,
+                    defaults={'description': f'Trip {status_code}'}
                 )
 
-            trip.save()
+                trip.status_id = status_obj
 
-            # If trip has ended, restore driver's available status
-            if status_code in ('completed', 'cancelled') and trip.driver_id:
-                from servers.redis_client import clear_driver_active_trip
-                clear_driver_active_trip(trip.driver_id.id)
+                # Set timestamps based on status
+                if status_code == 'reached':
+                    trip.reached_at = timezone.now()
+                    from servers.auth_user.services import send_push_notification
+                    send_push_notification(
+                        trip.user_id,
+                        "Driver Arrived",
+                        "Your driver has arrived at the pickup location.",
+                        {"trip_id": str(trip.id), "type": "driver_arrived"}
+                    )
+                elif status_code == 'in_progress':
+                    trip.started_at = timezone.now()
+                    from servers.auth_user.services import send_push_notification
+                    send_push_notification(
+                        trip.user_id,
+                        "Ride Started",
+                        "Your ride is now in progress.",
+                        {"trip_id": str(trip.id), "type": "ride_started"}
+                    )
+                elif status_code == 'completed':
+                    trip.completed_at = timezone.now()
+                    # Create payment on trip completion within the same transaction
+                    self._create_payment_on_complete(trip)
+                    
+                    from servers.rider.models import Notification
+                    Notification.objects.create(
+                        user_id=trip.user_id,
+                        title='Ride Completed',
+                        message=f'Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}',
+                    )
+                    
+                    from servers.auth_user.services import send_push_notification
+                    send_push_notification(
+                        trip.user_id,
+                        "Ride Completed",
+                        f"Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}",
+                        {"trip_id": str(trip.id), "type": "ride_completed"}
+                    )
+                elif status_code == 'cancelled':
+                    trip.cancelled_at = timezone.now()
+                    self._process_refund_on_cancel(trip)
+                    
+                    from servers.rider.models import Notification
+                    Notification.objects.create(
+                        user_id=trip.user_id,
+                        title='Ride Cancelled',
+                        message=f'Your ride has been cancelled.',
+                    )
+                    
+                    from servers.auth_user.services import send_push_notification
+                    send_push_notification(
+                        trip.user_id,
+                        "Ride Cancelled",
+                        "Your ride has been cancelled.",
+                        {"trip_id": str(trip.id), "type": "ride_cancelled"}
+                    )
 
-            result = {
-                'success': True,
-                'message': f'Trip {status_code}',
-                'driver_id': trip.driver_id_id if trip.driver_id else None,
-                'rider_id': trip.user_id_id,
-            }
+                trip.save()
 
-            # Include payment info for completed trips
-            if status_code == 'completed':
-                payment = trip.payments.first()
-                if payment:
-                    result['payment'] = {
-                        'payment_id': payment.id,
-                        'amount': str(payment.amount),
-                        'method': payment.method,
-                        'status': payment.status,
-                        'razorpay_order_id': payment.razorpay_order_id,
-                    }
+                # If trip has ended, restore driver's available status + invalidate cache
+                if status_code in ('completed', 'cancelled') and trip.driver_id:
+                    from servers.redis_client import clear_driver_active_trip, invalidate_trip
+                    clear_driver_active_trip(trip.driver_id.id)
+                    invalidate_trip(trip.id)
+                else:
+                    # For intermediate states, update cache with new status
+                    from servers.redis_client import cache_trip as _cache_trip
+                    _cache_trip(trip.id, status=status_code)
 
-            return result
+                result = {
+                    'success': True,
+                    'message': f'Trip {status_code}',
+                    'driver_id': trip.driver_id_id if trip.driver_id else None,
+                    'rider_id': trip.user_id_id,
+                }
+
+                # Include payment info for completed trips
+                if status_code == 'completed':
+                    payment = trip.payments.first()
+                    if payment:
+                        payment_info = {
+                            'payment_id': payment.id,
+                            'amount': str(payment.amount),
+                            'method': payment.method,
+                            'status': payment.status,
+                            'gateway_order_id': payment.gateway_order_id,
+                        }
+                        
+                        # Add payment options for deferred payments
+                        if payment.method == 'deferred':
+                            payment_info['payment_options'] = ['cash', 'wallet', 'online']
+                            payment_info['requires_selection'] = True
+                        
+                        result['payment'] = payment_info
+
+                return result
         except Trip.DoesNotExist:
             return {'success': False, 'error': 'Trip not found'}
         except Exception as e:
@@ -890,7 +1115,6 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
         """Create a Payment record when trip is completed."""
         from servers.payments.models import Payment, TransactionHistory
 
-        # Skip if payment already exists
         if trip.payments.exists():
             return
 
@@ -899,20 +1123,31 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             logger.warning(f"No fare amount for trip {trip.id}, skipping payment creation")
             return
 
-        payment_method = trip.payment_method or 'cash'
+        payment_method = trip.payment_method or 'deferred'
 
-        if payment_method == 'cash':
-            # Cash payment — mark completed immediately
+        if payment_method == 'deferred':
+            # Create placeholder payment for deferred selection
+            Payment.objects.create(
+                trip_id=trip,
+                user_id=trip.user_id,
+                amount=amount,
+                method='deferred',
+                status='pending',
+            )
+            trip.payment_status = 'pending'
+            trip.save(update_fields=['payment_status'])
+            # No TransactionHistory or driver earnings yet - will be created when payment method is selected
+        elif payment_method == 'cash':
             Payment.objects.create(
                 trip_id=trip,
                 user_id=trip.user_id,
                 amount=amount,
                 method='cash',
-                status='completed',
+                status='pending',
             )
-            trip.payment_status = 'completed'
+            trip.payment_status = 'pending'
+            trip.save(update_fields=['payment_status'])
 
-            # Create transaction history for cash
             if trip.driver_id:
                 TransactionHistory.objects.create(
                     trip_id=trip,
@@ -924,32 +1159,79 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                     status='completed',
                 )
             
-            from servers.driver.utils import create_driver_earning
-            create_driver_earning(trip)
+            from servers.driver.utils import credit_driver_wallet
+            credit_driver_wallet(trip)
+        elif payment_method == 'wallet':
+            from base.utils import wallet_payment
+            
+            wallet_result = wallet_payment(
+                user=trip.user_id,
+                amount=amount,
+                purpose='Trip payment',
+                reference_id=f'TRIP_{trip.id}',
+                idempotency_key=f'trip_{trip.id}_payment'
+            )
+            
+            if wallet_result.get('success'):
+                Payment.objects.create(
+                    trip_id=trip,
+                    user_id=trip.user_id,
+                    amount=amount,
+                    method='wallet',
+                    status='completed',
+                )
+                trip.payment_status = 'completed'
+                trip.save(update_fields=['payment_status'])
+                
+                if trip.driver_id:
+                    TransactionHistory.objects.create(
+                        trip_id=trip,
+                        user_id=trip.user_id,
+                        driver_id=trip.driver_id,
+                        amount=amount,
+                        method='wallet',
+                        user_name=trip.user_id.full_name or trip.user_id.phone_number,
+                        status='completed',
+                    )
+                
+                from servers.driver.utils import credit_driver_wallet
+                credit_driver_wallet(trip)
+            else:
+                logger.error(f"Wallet payment failed for trip {trip.id}: {wallet_result.get('error')}")
+                trip.payment_status = 'failed'
+                trip.save(update_fields=['payment_status'])
         else:
-            # Online payment — create pending payment with Razorpay order
-            from servers.payments.razorpay_utils import create_razorpay_order
+            from servers.payments.payment_gateways.factory import get_payment_gateway
 
-            order = create_razorpay_order(amount=amount, trip_id=trip.id)
+            gateway = get_payment_gateway()
+            order_result = gateway.create_order(
+                amount=amount,
+                currency='INR',
+                receipt=f'trip_{trip.id}',
+                notes={'trip_id': str(trip.id), 'user_id': str(trip.user_id.id)}
+            )
             Payment.objects.create(
                 trip_id=trip,
                 user_id=trip.user_id,
                 amount=amount,
                 method='online',
                 status='pending',
-                razorpay_order_id=order['id'] if order else None,
+                gateway_order_id=order_result.get('order_id') if order_result else None,
+                payment_gateway='cashfree'
             )
             trip.payment_status = 'pending'
+            trip.save(update_fields=['payment_status'])
 
     def _process_refund_on_cancel(self, trip):
         """Process refund if payment was completed online."""
         from servers.payments.models import Payment
-        from servers.payments.razorpay_utils import create_refund
+        from servers.payments.payment_gateways.factory import get_payment_gateway
         from servers.rider.models import Notification
 
         payment = Payment.objects.filter(trip_id=trip, method='online', status='completed').first()
-        if payment and payment.razorpay_payment_id:
-            refund = create_refund(payment.razorpay_payment_id)
+        if payment and payment.gateway_payment_id:
+            gateway = get_payment_gateway()
+            refund = gateway.create_refund(payment.gateway_payment_id)
             if refund:
                 payment.status = 'refunded'
                 payment.save()

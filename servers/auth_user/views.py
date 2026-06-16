@@ -1,7 +1,7 @@
 import logging
 import re
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, parser_classes
 from base.utils import success_response, error_response, generate_otp, send_otp_via_sns
 from django.core.cache import cache
 from django.contrib.auth import get_user_model
@@ -11,7 +11,9 @@ from django.db import transaction, IntegrityError
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from servers.rider.models import Rider
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from servers.driver.models import Driver
+from base.media import resolve_file_input
 
 logger = logging.getLogger(__name__)
 user_model = get_user_model()
@@ -127,6 +129,7 @@ def request_otp(request):
             )
         
         # Don't expose OTP in response for security
+        logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id}, otp: {otp}")
         return success_response(
             data={
                 'message': "OTP sent successfully",
@@ -291,6 +294,8 @@ def login(request):
         
         # Generate tokens
         try:
+            user.fcm_token=device_token
+            user.save()
             access_token = AccessToken.for_user(user)
             refresh_token = RefreshToken.for_user(user)
         except Exception as e:
@@ -393,9 +398,13 @@ def refresh(request):
 
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
 def update_user(request):
     """
     Update authenticated user information.
+    
+    Supports both JSON and multipart form data.
+    File uploads are delegated to Django storage.
     
     Expected request data (any/all fields are optional):
     {
@@ -408,7 +417,7 @@ def update_user(request):
         "city": str,
         "zip_code": str,
         "emergency_contact": str,
-        "avatar": str,
+        "avatar": file or null,
         "phone_number": str
     }
     """
@@ -428,8 +437,18 @@ def update_user(request):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Validate and update user data
-        update_data = request.data
+        update_data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+        avatar_provided, avatar_value, avatar_error = resolve_file_input(request, 'avatar')
+        if avatar_error:
+            return error_response(
+                code='UPLOAD_FAILED',
+                message=avatar_error,
+                field='avatar',
+                issue=avatar_error,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if avatar_provided:
+            update_data['avatar'] = avatar_value
         
         if not update_data:
             logger.warning(f"Update request with no data for user: {user_id}")
@@ -448,14 +467,7 @@ def update_user(request):
                 partial=True
             )
             
-            if user_serializer.is_valid():
-                user_serializer.save()
-                logger.info(f"User profile updated successfully: {user_id}")
-                return success_response(
-                    user_serializer.data,
-                    status.HTTP_200_OK
-                )
-            else:
+            if not user_serializer.is_valid():
                 logger.warning(f"Validation errors during user update: {user_serializer.errors}")
                 return error_response(
                     code='AUTH_VALIDATION_ERROR',
@@ -464,6 +476,13 @@ def update_user(request):
                     issue=str(user_serializer.errors),
                     status=status.HTTP_400_BAD_REQUEST
                 )
+
+            user_serializer.save()
+            logger.info(f"User profile updated successfully: {user_id}")
+            return success_response(
+                user_serializer.data,
+                status.HTTP_200_OK
+            )
         
         except Exception as e:
             logger.error(f"Error during user data update: {str(e)}")

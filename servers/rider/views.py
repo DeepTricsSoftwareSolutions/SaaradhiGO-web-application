@@ -25,8 +25,9 @@ def save_favorite_locations(request):
     }
     """
     try:
+        request.data['latitude']=request.data['latitude'][:12]
+        request.data['longitude']=request.data['longitude'][:12]
         instance = FavoritePlaceSerializer(data=request.data)
-
         if instance.is_valid():
             instance.save(user_id=request.user)
             return success_response(
@@ -83,6 +84,55 @@ def get_favorite_locations(request):
         )
     except Exception as e:
         logger.error(f"Unexpected error fetching favorite locations: {str(e)}")
+        return error_response(
+            code='INTERNAL_ERROR',
+            message='An unexpected error occurred',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_favorite_location(request, location_id):
+    """
+    Delete a specific favorite location for the authenticated user.
+    
+    URL parameters:
+    - location_id: ID of the favorite location to delete (int)
+    """
+    try:
+        # Get the favorite location instance
+        location = FavoritePlace.objects.get(id=location_id, user_id=request.user)
+        
+        # Delete the location
+        location.delete()
+        
+        return success_response(
+            {"message": "Favorite location deleted successfully"},
+            status.HTTP_200_OK
+        )
+    except FavoritePlace.DoesNotExist:
+        logger.warning(f"Favorite location not found for user {request.user.id}: {location_id}")
+        return error_response(
+            code='NOT_FOUND',
+            message='Favorite location not found',
+            field='location',
+            issue=f'No favorite location found with ID {location_id}',
+            status=status.HTTP_404_NOT_FOUND
+        )
+    except AttributeError as e:
+        logger.error(f"Profile error: {str(e)}")
+        return error_response(
+            code='PROFILE_ERROR',
+            message='User profile not found',
+            field='user',
+            issue='User profile issue',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error deleting favorite location: {str(e)}")
         return error_response(
             code='INTERNAL_ERROR',
             message='An unexpected error occurred',
@@ -214,3 +264,360 @@ def mark_all_notifications_read(request):
     
     Notification.objects.filter(user_id=request.user, is_read=False).update(is_read=True)
     return success_response({'message': 'All notifications marked as read'}, status.HTTP_200_OK)
+
+
+# ── Wallet ────────────────────────────────────────
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_wallet_balance(request):
+    """Get current wallet balance."""
+    from .models import Wallet
+    
+    try:
+        wallet = Wallet.objects.get(user_id=request.user)
+        return success_response({'balance': str(wallet.balance)}, status.HTTP_200_OK)
+    except Wallet.DoesNotExist:
+        # Create wallet if not exists
+        wallet = Wallet.objects.create(user_id=request.user, balance=0)
+        return success_response({'balance': '0.00'}, status.HTTP_200_OK)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_wallet_order(request):
+    """
+    Create a Cashfree order for a wallet top-up.
+    
+    Expected: { "amount": "500.00" }
+    """
+    from .models import WalletTransaction
+    from servers.payments.payment_gateways.factory import get_payment_gateway
+    
+    amount = request.data.get('amount')
+    if not amount:
+        return error_response(
+            code='MISSING_FIELDS',
+            message='amount is required',
+            field='amount',
+            issue='Provide the amount to add to wallet',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        amount_val = float(amount)
+        if amount_val <= 0:
+            raise ValueError("Amount must be positive")
+    except ValueError:
+        return error_response(
+            code='INVALID_AMOUNT',
+            message='Invalid amount provided',
+            field='amount',
+            issue='Amount must be a positive number',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Get payment gateway
+    try:
+        gateway = get_payment_gateway()
+    except Exception as e:
+        logger.error(f"Failed to initialize payment gateway: {e}")
+        return error_response(
+            code='PAYMENT_GATEWAY_ERROR',
+            message='Payment gateway not configured',
+            field='payment_gateway',
+            issue='Gateway initialization failed',
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+    try:
+        # Create order using payment gateway
+        order_result = gateway.create_order(
+            amount=amount_val,
+            currency='INR',
+            receipt=f'wallet_{request.user.id}',
+            notes={'purpose': 'wallet_topup', 'user_id': str(request.user.id)}
+        )
+        
+        logger.info(f"Cashfree wallet order created for user {request.user.id}: {order_result.get('order_id')}")
+        
+        # Create WalletTransaction
+        txn = WalletTransaction.objects.create(
+            user_id=request.user,
+            amount=amount_val,
+            txn_type='credit',
+            status='pending',
+            gateway_order_id=order_result.get('order_id'),
+            payment_gateway='cashfree'
+        )
+        
+        return success_response({
+            'transaction_id': txn.id,
+            'gateway_order_id': order_result.get('order_id'),
+            'amount': str(amount_val),
+            'currency': 'INR',
+            'description': 'Wallet Top-up',
+            'payment_session_id': order_result.get('payment_session_id'),
+            'order_token': order_result.get('order_token'),
+            'gateway': 'cashfree'
+        }, status.HTTP_201_CREATED)
+    except Exception as e:
+        logger.error(f"Failed to create wallet order: {e}")
+        return error_response(
+            code='PAYMENT_GATEWAY_ERROR',
+            message='Failed to create payment order. Please try again.',
+            field='payment_gateway',
+            issue=str(e),
+            status=status.HTTP_502_BAD_GATEWAY
+        )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def verify_wallet_payment(request):
+    """
+    Verify a wallet top-up payment.
+    
+    Expected: {
+        "gateway_order_id": str,
+        "gateway_payment_id": str
+    }
+    """
+    from .models import WalletTransaction, Wallet
+    from servers.payments.payment_gateways.factory import get_payment_gateway
+    from django.db import transaction
+
+    order_id = request.data.get('gateway_order_id')
+    payment_id = request.data.get('gateway_payment_id')
+
+    if not order_id:
+        return error_response(
+            code='MISSING_FIELDS',
+            message='gateway_order_id is required',
+            field='gateway_order_id',
+            issue='Missing order ID',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        txn = WalletTransaction.objects.get(
+            gateway_order_id=order_id,
+            user_id=request.user
+        )
+    except WalletTransaction.DoesNotExist:
+        return error_response(
+            code='NOT_FOUND',
+            message='Transaction not found',
+            field='gateway_order_id',
+            issue='No transaction matches this order',
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if txn.status == 'completed':
+        return success_response({
+            'message': 'Payment already verified',
+            'transaction_id': txn.id,
+            'status': 'completed',
+        }, status.HTTP_200_OK)
+
+    # Get payment gateway
+    try:
+        gateway = get_payment_gateway()
+    except Exception as e:
+        logger.error(f"Failed to initialize payment gateway: {e}")
+        return error_response(
+            code='PAYMENT_GATEWAY_ERROR',
+            message='Payment gateway not configured',
+            field='payment_gateway',
+            issue='Gateway initialization failed',
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+    # Verify payment using gateway
+    try:
+        # For Cashfree, we need to check payment status
+        # The gateway should have a method to verify payment
+        is_valid = gateway.verify_payment_signature(
+            order_id=order_id,
+            payment_id=payment_id,
+            signature=None  # Cashfree doesn't use client-side signature verification
+        )
+        
+        if not is_valid:
+            # If signature verification fails, check payment status directly
+            payment_status = gateway.get_order_status(order_id)
+            if payment_status.get('status') in ['PAID', 'SUCCESS']:
+                is_valid = True
+    except Exception as e:
+        logger.error(f"Payment verification error: {e}")
+        is_valid = False
+
+    if not is_valid:
+        txn.status = 'failed'
+        if payment_id:
+            txn.gateway_payment_id = payment_id
+        txn.save()
+        return error_response(
+            code='PAYMENT_VERIFICATION_FAILED',
+            message='Payment verification failed',
+            field='payment_gateway',
+            issue='Payment could not be verified',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Apply to wallet
+    with transaction.atomic():
+        txn.status = 'completed'
+        if payment_id:
+            txn.gateway_payment_id = payment_id
+        txn.save()
+
+        wallet, _ = Wallet.objects.get_or_create(user_id=request.user)
+        wallet.balance = float(wallet.balance) + float(txn.amount) # Add money
+        wallet.save()
+
+    logger.info(f"Wallet Top-up verified for user {request.user.id}: added {txn.amount}")
+    return success_response({
+        'message': 'Payment verified successfully',
+        'transaction_id': txn.id,
+        'status': 'completed',
+        'new_balance': str(wallet.balance)
+    }, status.HTTP_200_OK)
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_wallet_transactions(request):
+    """Get wallet transactions for the user."""
+    from .models import WalletTransaction
+    from .serializers import WalletTransactionSerializer
+    from rest_framework.pagination import PageNumberPagination
+    
+    transactions = WalletTransaction.objects.filter(user_id=request.user).order_by('-id')
+    
+    paginator = PageNumberPagination()
+    paginator.page_size = 20
+    result_page = paginator.paginate_queryset(transactions, request)
+    serializer = WalletTransactionSerializer(result_page, many=True)
+    return success_response(serializer.data,status.HTTP_200_OK)
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def wallet_payment(request):
+    """
+    Initiate a direct payment from wallet without Razorpay.
+    
+    Expected: {
+        "amount": "100.00",
+        "purpose": "Trip payment",
+        "reference_id": "TRIP_123",
+        "idempotency_key": "unique-key-123"
+    }
+    """
+    from .models import WalletTransaction, Wallet
+    from django.db import transaction
+    import uuid
+    
+    amount = request.data.get('amount')
+    purpose = request.data.get('purpose', 'Payment')
+    reference_id = request.data.get('reference_id')
+    idempotency_key = request.data.get('idempotency_key')
+    
+    # Validate required fields
+    if not amount:
+        return error_response(
+            code='MISSING_FIELDS',
+            message='amount is required',
+            field='amount',
+            issue='Provide the amount to pay from wallet',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Generate idempotency key if not provided
+    if not idempotency_key:
+        idempotency_key = str(uuid.uuid4())
+    
+    try:
+        amount_val = float(amount)
+        if amount_val <= 0:
+            raise ValueError("Amount must be positive")
+    except ValueError:
+        return error_response(
+            code='INVALID_AMOUNT',
+            message='Invalid amount provided',
+            field='amount',
+            issue='Amount must be a positive number',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Check for duplicate idempotency key
+    existing_txn = WalletTransaction.objects.filter(
+        idempotency_key=idempotency_key
+    ).first()
+    
+    if existing_txn:
+        return success_response({
+            'message': 'Duplicate request detected - using existing transaction',
+            'transaction_id': existing_txn.id,
+            'status': existing_txn.status,
+            'amount': str(existing_txn.amount)
+        }, status.HTTP_200_OK)
+    
+    try:
+        with transaction.atomic():
+            # Lock wallet row for update
+            wallet = Wallet.objects.select_for_update().get(user_id=request.user)
+            
+            # Check balance with lock
+            if float(wallet.balance) < amount_val:
+                return error_response(
+                    code='INSUFFICIENT_BALANCE',
+                    message='Insufficient wallet balance',
+                    field='wallet',
+                    issue='Wallet balance is less than the amount to pay',
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Deduct amount from wallet
+            wallet.balance = float(wallet.balance) - amount_val
+            wallet.save()
+            
+            # Create direct debit transaction
+            txn = WalletTransaction.objects.create(
+                user_id=request.user,
+                amount=amount_val,
+                txn_type='debit',
+                status='completed',
+                purpose=purpose,
+                reference_id=reference_id,
+                idempotency_key=idempotency_key
+            )
+            
+            logger.info(f"Direct wallet payment successful for user {request.user.id}: "
+                        f"Deducted {amount_val}, new balance: {wallet.balance}")
+            
+            return success_response({
+                'transaction_id': txn.id,
+                'amount': str(amount_val),
+                'new_balance': str(wallet.balance),
+                'purpose': purpose,
+                'reference_id': reference_id,
+                'idempotency_key': idempotency_key,
+                'message': 'Payment successful'
+            }, status.HTTP_201_CREATED)
+            
+    except Wallet.DoesNotExist:
+        return error_response(
+            code='WALLET_NOT_FOUND',
+            message='Wallet not found',
+            field='wallet',
+            issue='User wallet does not exist',
+            status=status.HTTP_404_NOT_FOUND
+        )
+    
+    except Exception as e:
+        logger.error(f"Direct wallet payment failed: {str(e)}")
+        return error_response(
+            code='PAYMENT_FAILED',
+            message='Payment failed',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

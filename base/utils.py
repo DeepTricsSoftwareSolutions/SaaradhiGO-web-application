@@ -187,3 +187,82 @@ def send_otp_via_sns(phone_number: str, message: str) -> Dict[str, Any]:
             "error": f"Unexpected error: {str(e)}"
         }
 
+
+def wallet_payment(user, amount, purpose='Trip payment', reference_id=None, idempotency_key=None):
+    """
+    Initiate a direct payment from wallet without Razorpay.
+    
+    Args:
+        user: The user making the payment
+        amount: Amount to deduct from wallet
+        purpose: Purpose of the payment (default: 'Trip payment')
+        reference_id: Reference ID (e.g., trip ID)
+        idempotency_key: Unique key to prevent duplicate transactions
+    
+    Returns:
+        dict with success status and transaction details
+    """
+    import uuid
+    from django.db import transaction
+    from servers.rider.models import WalletTransaction, Wallet
+    
+    try:
+        amount_val = float(amount)
+        if amount_val <= 0:
+            return {'success': False, 'error': 'Amount must be positive'}
+    except (ValueError, TypeError):
+        return {'success': False, 'error': 'Invalid amount provided'}
+    
+    if not idempotency_key:
+        idempotency_key = str(uuid.uuid4())
+    
+    existing_txn = WalletTransaction.objects.filter(idempotency_key=idempotency_key).first()
+    if existing_txn:
+        return {
+            'success': True,
+            'transaction_id': existing_txn.id,
+            'status': existing_txn.status,
+            'amount': str(existing_txn.amount),
+            'duplicate': True
+        }
+    
+    try:
+        with transaction.atomic():
+            wallet = Wallet.objects.select_for_update().get(user_id=user)
+            
+            if float(wallet.balance) < amount_val:
+                return {'success': False, 'error': 'Insufficient wallet balance'}
+            
+            wallet.balance = float(wallet.balance) - amount_val
+            wallet.save()
+            
+            txn = WalletTransaction.objects.create(
+                user_id=user,
+                amount=amount_val,
+                txn_type='debit',
+                status='completed',
+                purpose=purpose,
+                reference_id=reference_id,
+                idempotency_key=idempotency_key
+            )
+            
+            logger.info(f"Direct wallet payment successful for user {user.id}: "
+                        f"Deducted {amount_val}, new balance: {wallet.balance}")
+            
+            return {
+                'success': True,
+                'transaction_id': txn.id,
+                'amount': str(amount_val),
+                'new_balance': str(wallet.balance),
+                'purpose': purpose,
+                'reference_id': reference_id,
+                'idempotency_key': idempotency_key,
+                'message': 'Payment successful'
+            }
+            
+    except Wallet.DoesNotExist:
+        return {'success': False, 'error': 'Wallet not found'}
+    except Exception as e:
+        logger.error(f"Direct wallet payment failed: {str(e)}")
+        return {'success': False, 'error': str(e)}
+

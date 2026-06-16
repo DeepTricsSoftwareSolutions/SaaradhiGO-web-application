@@ -2,7 +2,8 @@ import math
 import logging
 from decimal import Decimal
 from django.utils import timezone
-
+from .models import Trip
+from .serializers import TripDetailSerializer
 logger = logging.getLogger(__name__)
 
 import requests
@@ -252,3 +253,47 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=Non
         'vehicle_type': vehicle_type or 'default',
         'source': source,
     }
+
+def get_trip_details(trip_id):
+    try:
+        obj = Trip.objects.select_related(
+            'status_id', 'driver_id', 'driver_id__user_id',
+            'vehicle_id', 'vehicle_id__vehicle_type_id'
+        ).prefetch_related(
+            'fare_pricing', 'ratings', 'ratings__rater_id'
+        ).get(id=trip_id)
+    except Trip.DoesNotExist:
+        return None
+    
+    data = TripDetailSerializer(obj).data
+    
+    # We want to format the output for Redis cache as string-based flat fields
+    # including driver details
+    cache_data = {
+        'status': data.get('status'),
+        'rider_id': str(obj.user_id_id) if obj.user_id_id else '',
+        'driver_id': str(obj.driver_id_id) if obj.driver_id_id else '',
+        'pickup_lat': str(obj.pickup_lat),
+        'pickup_lng': str(obj.pickup_long),
+        'destination_lat': str(obj.destination_lat),
+        'destination_lng': str(obj.destination_long),
+        'estimated_fare': str(obj.estimated_fare),
+        'payment_method': obj.payment_method or 'cash'
+    }
+    
+    driver_name = data.get('driver_name')
+    if driver_name:
+        cache_data['driver_name'] = str(driver_name)
+    
+    vehicle_info = data.get('vehicle_info')
+    if vehicle_info:
+        cache_data['vehicle_model'] = str(vehicle_info.get('model', ''))
+        cache_data['vehicle_brand'] = str(vehicle_info.get('brand', ''))
+        cache_data['vehicle_number'] = str(vehicle_info.get('vehicle_number', ''))
+        cache_data['vehicle_color'] = str(vehicle_info.get('color', ''))
+    
+    if obj.driver_id:
+        cache_data['driver_phone'] = str(obj.driver_id.user_id.phone_number)
+        cache_data['driver_rating'] = str(obj.driver_id.ratings)
+        
+    return cache_data

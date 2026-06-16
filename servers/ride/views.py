@@ -376,7 +376,46 @@ def trip_detail(request, trip_id):
     """
     Get detailed info for a single trip, including fare breakdown and ratings.
     Only the rider or assigned driver can view.
+    Checks Redis cache first for active trips before querying PostgreSQL.
     """
+    from servers.redis_client import get_cached_trip
+
+    # --- Cache-ahead read for active trips ---
+    cached = get_cached_trip(trip_id)
+    if cached:
+        # Verify the requesting user is the rider or driver from cache
+        cached_rider_id = cached.get('rider_id')
+        cached_driver_id = cached.get('driver_id')
+        is_rider = str(request.user.id) == str(cached_rider_id)
+        is_driver = (
+            cached_driver_id and
+            hasattr(request.user, 'driver') and
+            str(request.user.driver.id) == str(cached_driver_id)
+        )
+        if not is_rider and not is_driver:
+            return error_response(
+                code='FORBIDDEN',
+                message='You do not have access to this trip',
+                field='trip_id',
+                issue='Only the rider or assigned driver can view this trip',
+                status=status.HTTP_403_FORBIDDEN
+            )
+        # Return lightweight cached response
+        return success_response({
+            'trip_id': trip_id,
+            'status': cached.get('status'),
+            'rider_id': cached.get('rider_id'),
+            'driver_id': cached.get('driver_id'),
+            'pickup_lat': cached.get('pickup_lat'),
+            'pickup_lng': cached.get('pickup_lng'),
+            'destination_lat': cached.get('destination_lat'),
+            'destination_lng': cached.get('destination_lng'),
+            'estimated_fare': cached.get('estimated_fare'),
+            'payment_method': cached.get('payment_method'),
+            'source': 'cache',
+        }, status.HTTP_200_OK)
+
+    # --- Cache miss: fall back to full DB query ---
     try:
         trip = Trip.objects.select_related(
             'status_id', 'driver_id', 'driver_id__user_id',
@@ -412,6 +451,65 @@ def trip_detail(request, trip_id):
     serializer = TripDetailSerializer(trip)
     return success_response(serializer.data, status.HTTP_200_OK)
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def trip_driver_details(request,trip_id):
+    from servers.redis_client import get_cached_trip
+    
+    # Check cache first for rapid response
+    cached = get_cached_trip(trip_id)
+    if cached and 'driver_id' in cached:
+        return success_response({
+            'id': trip_id,
+            'status': cached.get('status'),
+            'driver_name': cached.get('driver_name'),
+            'driver_phone': cached.get('driver_phone'),
+            'driver_rating': cached.get('driver_rating'),
+            'vehicle_info': {
+                'vehicle_number': cached.get('vehicle_number'),
+                'brand': cached.get('vehicle_brand'),
+                'model': cached.get('vehicle_model'),
+                'color': cached.get('vehicle_color')
+            },
+            'otp': cached.get('otp'),
+            'source': 'cache'
+        }, status.HTTP_200_OK)
+
+    # Fall back to DB query
+    try:
+        trip = Trip.objects.select_related(
+            'status_id', 'driver_id', 'driver_id__user_id',
+            'vehicle_id', 'vehicle_id__vehicle_type_id'
+        ).get(id=trip_id)
+    except Trip.DoesNotExist:
+        return error_response(
+            code='NOT_FOUND',
+            message='Trip not found',
+            field='trip_id',
+            issue=f'No trip with id {trip_id}',
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    data = {
+        'id': trip.id,
+        'status': trip.status_id.status_code if trip.status_id else 'pending',
+        'driver_name': str(trip.driver_id) if trip.driver_id else None,
+        'driver_phone': trip.driver_id.user_id.phone_number if trip.driver_id and trip.driver_id.user_id else None,
+        'driver_rating': str(trip.driver_id.ratings) if trip.driver_id else None,
+        'vehicle_info': None,
+        'source': 'database'
+    }
+
+    if trip.vehicle_id:
+        v = trip.vehicle_id
+        data['vehicle_info'] = {
+            'vehicle_number': v.vehicle_number,
+            'brand': v.brand,
+            'model': v.model,
+            'color': v.color
+        }
+        
+    return success_response(data, status.HTTP_200_OK)
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -555,3 +653,52 @@ def rate_trip(request):
         'comments': rating.comments,
         'message': 'Rating submitted successfully',
     }, status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_active_trip(request):
+    """
+    Get the user's active trip for state recovery.
+    Returns the current active trip (not completed/cancelled) if any.
+
+    Used by Flutter app on launch to determine what screen to display.
+    Returns 404 if no active trip exists.
+    """
+    # Active trips are those not completed and not cancelled
+    active_statuses = ['requested','accepted', 'reached', 'in_progress']
+
+    trip = Trip.objects.filter(
+        user_id=request.user,
+        status_id__status_code__in=active_statuses
+    ).select_related(
+        'status_id', 'driver_id', 'driver_id__user_id',
+        'vehicle_id', 'vehicle_id__vehicle_type_id'
+    ).order_by('-requested_at').first()
+
+    # If no active trip, check for recently completed (within 1 hour)
+    # This handles the case where app was killed after trip completion
+    if not trip:
+        from django.utils import timezone
+        from datetime import timedelta
+
+        one_hour_ago = timezone.now() - timedelta(hours=1)
+        trip = Trip.objects.filter(
+            user_id=request.user,
+            status_id__status_code='completed',
+            completed_at__gte=one_hour_ago
+        ).select_related(
+            'status_id', 'driver_id', 'vehicle_id'
+        ).order_by('-completed_at').first()
+
+    if not trip:
+        return error_response(
+            code='NO_ACTIVE_TRIP',
+            message='No active trip found',
+            field='trip',
+            issue='User has no active or recent trip',
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    serializer = TripDetailSerializer(trip)
+    return success_response(serializer.data, status.HTTP_200_OK)

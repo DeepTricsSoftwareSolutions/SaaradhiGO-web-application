@@ -25,8 +25,9 @@ def auth_client_rider(db):
     user = User.objects.create_user(phone_number="+919999999999", role="rider")
     Rider.objects.create(user_id=user)
     token = str(AccessToken.for_user(user))
-    api_client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
-    return api_client, user
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+    return client, user
 
 @pytest.fixture
 def auth_client_driver(db):

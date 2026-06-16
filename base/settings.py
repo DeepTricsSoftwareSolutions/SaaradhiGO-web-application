@@ -10,23 +10,21 @@ load_dotenv()
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-*5(=ti+p9y=gyu0zkoojz$b55meinl-5w*ibm)3mpkm2ybiohh'
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
 REDIS_URL=os.environ.get('REDIS_URL','redis://redis:6379')
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG_ENV=os.environ.get('DEBUG_ENV','False')
+DEBUG = DEBUG_ENV=='True'
 
-ALLOWED_HOSTS = ['*']
-
-CSRF_TRUSTED_ORIGINS = [
-    'https://*.onrender.com',
-]
-render_url = os.environ.get('RENDER_EXTERNAL_URL')
-if render_url:
-    CSRF_TRUSTED_ORIGINS.append(render_url)
-    
-csrf_origins = os.environ.get('CSRF_TRUSTED_ORIGINS')
-if csrf_origins:
-    CSRF_TRUSTED_ORIGINS.extend(csrf_origins.split(','))
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
+if DEBUG_ENV=='True':
+    CSRF_ALLOW_ALL_ORIGINS = True
+else:
+    csrf_trusted_origins = os.environ.get('CSRF_TRUSTED_ORIGINS', '')
+    if csrf_trusted_origins:
+        CSRF_TRUSTED_ORIGINS = csrf_trusted_origins.split(',')
+    else:
+        CSRF_TRUSTED_ORIGINS = []
 
 
 # Application definition
@@ -43,11 +41,13 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     'channels',
+    'storages',
     'servers.auth_user',
     'servers.rider',
     'servers.driver',
     'servers.ride',
     'servers.payments',
+    'django_cleanup.apps.CleanupConfig',
     # 'servers.support',
     
 ]
@@ -88,7 +88,10 @@ CACHES={
     'default':{
         "BACKEND": "django_redis.cache.RedisCache",
         "LOCATION": REDIS_URL+'/1',
-        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"}
+        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "SOCKET_CONNECT_TIMEOUT": 5,
+            "SOCKET_TIMEOUT": 5
+        }
     },
     
 }
@@ -108,16 +111,43 @@ TEMPLATES = [
     },
 ]
 
+#URLS
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+BACKEND_URL  = os.environ.get("BACKEND_URL", "http://localhost:8000")
+
 #AWS
 AWS_SECRET_ACCESS_KEY=os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_ACCESS_KEY_ID=os.environ.get("AWS_ACCESS_KEY_ID")
 AWS_REGION=os.environ.get("AWS_REGION")
 AWS_SNS_SENDER_ID=os.environ.get("AWS_SNS_SENDER_ID")
 
+# AWS S3
+AWS_S3_BUCKET_NAME=os.environ.get("AWS_S3_BUCKET_NAME", "")
+AWS_S3_REGION=os.environ.get("AWS_S3_REGION", AWS_REGION)
+AWS_STORAGE_BUCKET_NAME=AWS_S3_BUCKET_NAME
+AWS_S3_REGION_NAME=AWS_S3_REGION
+AWS_DEFAULT_ACL=None
+AWS_QUERYSTRING_EXPIRE=int(os.environ.get("AWS_QUERYSTRING_EXPIRE", "900"))
+AWS_S3_FILE_OVERWRITE=False
+AWS_S3_SIGNATURE_VERSION="s3v4"
+AWS_S3_ADDRESSING_STYLE="virtual"
+
 # Razorpay
 RAZORPAY_KEY_ID=os.environ.get("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET=os.environ.get("RAZORPAY_KEY_SECRET", "")
 RAZORPAY_WEBHOOK_SECRET=os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
+
+# Cashfree
+CASHFREE_APP_ID=os.environ.get("CASHFREE_APP_ID", "")
+CASHFREE_SECRET_KEY=os.environ.get("CASHFREE_SECRET_KEY", "")
+CASHFREE_WEBHOOK_SECRET=os.environ.get("CASHFREE_WEBHOOK_SECRET", "")
+CASHFREE_API_VERSION=os.environ.get("CASHFREE_API_VERSION", "2023-08-01")
+CASHFREE_ENVIRONMENT=os.environ.get("CASHFREE_ENVIRONMENT", "sandbox")  # sandbox or production
+CASHFREE_PG_BASE_URL = os.environ.get("CASHFREE_PG_BASE_URL", "https://sandbox.cashfree.com")
+
+# Payment Gateway Selection
+PAYMENT_GATEWAY=os.environ.get("PAYMENT_GATEWAY", "cashfree")
+PAYOUT_GATEWAY=os.environ.get("PAYOUT_GATEWAY", "cashfree")
 
 # Platform Settings
 PLATFORM_COMMISSION_PERCENT=float(os.environ.get("PLATFORM_COMMISSION_PERCENT", "0"))
@@ -149,6 +179,13 @@ DATABASES = {
 }
 
 if os.environ.get('DB_HOST'):
+    db_options = {
+        'sslmode': os.environ.get('DB_SSLMODE', 'require'),
+    }
+    sslrootcert = os.environ.get('DB_SSLROOTCERT')
+    if sslrootcert:
+        db_options['sslrootcert'] = os.path.join(BASE_DIR, sslrootcert) if not os.path.isabs(sslrootcert) else sslrootcert
+
     DATABASES['default'] = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.environ.get('DB_NAME'),
@@ -156,9 +193,7 @@ if os.environ.get('DB_HOST'):
         'PASSWORD': os.environ.get('DB_PASSWORD'),
         'HOST': os.environ.get('DB_HOST'),
         'PORT': os.environ.get('DB_PORT', '5432'),
-        'OPTIONS': {
-            'sslmode': 'require',
-        }
+        'OPTIONS': db_options,
     }
 
 # Password validation
